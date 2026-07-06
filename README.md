@@ -62,3 +62,5 @@ We take security seriously because this tool manages your infrastructure.
 ---
 
 *Made with ❤️ by developers, for developers.*
+
+[serghini.me](https://serghini.me) 
