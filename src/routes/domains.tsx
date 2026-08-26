@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import { Fragment } from 'hono/jsx'
 import { layout } from '../templates/layout'
 import { CloudflareClient } from '../cloudflare'
-import { logAudit, isBlacklisted } from '../lib/db'
+import { logAudit, isBlacklisted, writeRecordHistory } from '../lib/db'
 import {
   getPermissionLevel, can, canViewDomain, canManageDelegation, canAddRecords,
   canEditRecord, canDeleteRecord, GLOBAL_ROLES, isValidLevel, RECORD_LEVEL_KEYS,
@@ -11,8 +11,10 @@ import {
 } from '../lib/auth'
 import type { Role } from '../lib/auth'
 import { setFlash } from '../lib/session'
+import { rateLimit } from '../lib/ratelimit'
 import { Badge, Button } from '../templates/components'
 import { parseId, validateRecordInput, RECORD_TYPES } from '../lib/validation'
+import { parseBindZoneFile, parseCsv, formatRecordsBind, formatRecordsCsv, IMPORT_MAX_ENTRIES } from '../lib/zonefiles'
 
 type Bindings = {
   record_manager_db: D1Database
@@ -273,9 +275,18 @@ domains.get('/:id', async (c) => {
         <h2 class="text-2xl font-bold text-slate-900 tracking-tight">{domain.zone_name}</h2>
         <p class="text-sm text-slate-500">Configure real-time DNS records on Cloudflare edge servers.</p>
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 items-center flex-wrap">
+        <a href={`/domains/${domainId}/export?format=bind`} title="Download zone file" class="px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-bold text-xs tracking-wider transition bg-white">Export BIND</a>
+        <a href={`/domains/${domainId}/export?format=csv`} title="Download CSV" class="px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-bold text-xs tracking-wider transition bg-white">Export CSV</a>
         {canAdd && (
-          <Button onclick="document.getElementById('add-record-panel').classList.toggle('hidden')">
+          <Button data-toggle-target="#import-panel" variant="secondary">Import</Button>
+        )}
+        <a href={`/domains/${domainId}/history`} class="px-5 py-2.5 rounded-lg border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-bold text-xs tracking-wider transition bg-white flex items-center">
+          <svg class="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          History
+        </a>
+        {canAdd && (
+          <Button data-toggle-target="#add-record-panel">
             <svg class="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
             Add Record
           </Button>
@@ -318,9 +329,29 @@ domains.get('/:id', async (c) => {
       </div>
     )}
 
+    {canAdd && (
+      <div id="import-panel" class="hidden mb-8 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+        <h3 class="text-xs font-bold text-slate-700 font-mono mb-1 uppercase tracking-wider">Import Records</h3>
+        <p class="text-[10px] text-slate-400 mb-4 font-mono">Paste a BIND zone file or CSV (name,type,content,ttl,priority,proxied). Max {500} entries — every entry is validated and checked against the blacklist before it reaches Cloudflare.</p>
+        <form method="post" action={`/domains/${domainId}/import`} class="space-y-4">
+          <div class="flex gap-4 items-end">
+            <div class="w-40">
+              <label class="block text-xs font-bold text-slate-500 mb-1 uppercase font-mono">Format</label>
+              <select name="format" class="w-full text-xs">
+                <option value="bind">BIND zone file</option>
+                <option value="csv">CSV</option>
+              </select>
+            </div>
+            <button type="submit" class="btn-primary px-5 py-2 rounded-lg font-bold text-xs">Import Records</button>
+          </div>
+          <textarea name="zonefile" rows={8} required placeholder={'www.example.com.\t3600\tIN\tA\t203.0.113.10\nmx.example.com.\t3600\tIN\tMX\t10 mail.example.com.'} class="w-full text-xs font-mono"></textarea>
+        </form>
+      </div>
+    )}
+
     <div class="mb-6 flex justify-between items-center gap-4">
       <div class="relative w-full max-w-sm">
-        <input type="text" id="record-search" placeholder="Filter records..." class="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" onkeyup="filterRecords()" />
+        <input type="text" id="record-search" placeholder="Filter records..." class="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" data-filter-target=".record-row" />
         <svg class="absolute left-3 top-3 h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
         </svg>
@@ -377,7 +408,7 @@ domains.get('/:id', async (c) => {
                   <div class="flex justify-end gap-2">
                     {editable && <a href={`/domains/${domainId}/records/${r.id}/edit`} class="text-indigo-600 hover:text-indigo-500 p-1 rounded transition hover:bg-indigo-50" title="Edit"><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg></a>}
                     {deletable && (
-                      <form method="post" action={`/domains/${domainId}/records/${r.id}/delete`} style="display:inline;" onsubmit="return confirm('Are you sure?')">
+                      <form method="post" action={`/domains/${domainId}/records/${r.id}/delete`} style="display:inline;" data-confirm="Are you sure?">
                         <button type="submit" class="text-rose-500 hover:text-rose-600 p-1 rounded transition hover:bg-rose-50" title="Delete">
                           <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                         </button>
@@ -506,16 +537,6 @@ domains.get('/:id', async (c) => {
       </div>
     )}
 
-    <script dangerouslySetInnerHTML={{ __html: `
-      function filterRecords() {
-        const query = document.getElementById('record-search').value.toLowerCase();
-        const rows = document.querySelectorAll('.record-row');
-        rows.forEach(row => {
-          const content = row.getAttribute('data-search').toLowerCase();
-          row.style.display = content.includes(query) ? '' : 'none';
-        });
-      }
-    `}} />
     </Fragment>
   ), user, c.get('flash')))
 })
@@ -704,9 +725,17 @@ domains.post('/:id/records', async (c) => {
   await logAudit(c.env.record_manager_db, user.email, 'CREATE', 'RECORD', record.name, { domain: domain.zone_name, type: record.type })
 
   if (result?.id) {
-    await c.env.record_manager_db.prepare(
-      'INSERT INTO record_metadata (record_id, domain_id, created_by_email) VALUES (?, ?, ?)'
-    ).bind(result.id, domain.id, user.email).run()
+    await c.env.record_manager_db.batch([
+      c.env.record_manager_db.prepare(
+        'INSERT INTO record_metadata (record_id, domain_id, created_by_email) VALUES (?, ?, ?)'
+      ).bind(result.id, domain.id, user.email),
+      // History rows keep the pre-image of every change for the zone's trail.
+      c.env.record_manager_db.prepare(
+        "INSERT INTO record_history (domain_id, record_id, name, type, content, ttl, action, actor_email) VALUES (?, ?, ?, ?, ?, ?, 'CREATE', ?)"
+      ).bind(domain.id, result.id, record.name, record.type, record.content, record.ttl ?? null, user.email)
+    ])
+  } else {
+    await writeRecordHistory(c.env.record_manager_db, domain.id, '', record, 'CREATE', user.email)
   }
 
   await setFlash(c, { type: 'success', text: `Record ${record.name} created successfully.` })
@@ -838,6 +867,7 @@ domains.post('/:id/records/:recordId', async (c) => {
   }
 
   await logAudit(c.env.record_manager_db, user.email, 'UPDATE', 'RECORD', record.name, { domain: domain.zone_name, type: record.type })
+  await writeRecordHistory(c.env.record_manager_db, domain.id, recordId, record, 'UPDATE', user.email)
   await setFlash(c, { type: 'success', text: `DNS configuration for ${record.name} deployed.` })
   return c.redirect(`/domains/${domain.id}`)
 })
@@ -849,11 +879,14 @@ domains.post('/:id/records/:recordId/delete', async (c) => {
 
   const cf = new CloudflareClient(c.get('settings').CF_API_TOKEN)
   let deletedName = recordId
+  let deletedSnapshot: any = null
   try {
-    // Capture the real name first so the audit trail isn't "UNKNOWN".
+    // Capture the real record first so the audit trail isn't "UNKNOWN" and
+    // history keeps the final state of what was removed.
     const existing = (await cf.listRecords(domain.zone_id)).find(r => r.id === recordId)
     if (existing) {
       deletedName = existing.name
+      deletedSnapshot = existing
       await cf.deleteRecord(domain.zone_id, recordId)
     }
   } catch (e: any) {
@@ -866,10 +899,240 @@ domains.post('/:id/records/:recordId/delete', async (c) => {
     c.env.record_manager_db.prepare('DELETE FROM record_metadata WHERE record_id = ?').bind(recordId),
     c.env.record_manager_db.prepare('DELETE FROM record_permissions WHERE record_id = ?').bind(recordId)
   ])
+  await writeRecordHistory(
+    c.env.record_manager_db, domain.id, recordId,
+    deletedSnapshot ?? { name: deletedName, type: 'UNKNOWN', content: '', ttl: undefined },
+    'DELETE', user.email
+  )
 
   await logAudit(c.env.record_manager_db, user.email, 'DELETE', 'RECORD', deletedName, { domain: domain.zone_name, record_id: recordId })
   await setFlash(c, { type: 'info', text: `DNS record ${deletedName} has been purged.` })
   return c.redirect(`/domains/${domain.id}`)
+})
+
+// ---------------------------------------------------------------------------
+// Import & export (BIND zone files / CSV)
+// ---------------------------------------------------------------------------
+
+domains.get('/:id/export', async (c) => {
+  const auth = requireUser(c)
+  if ('denied' in auth) return auth.denied
+  const user = auth.user
+
+  const domain = await loadDomain(c, c.req.param('id'))
+  if (!domain) return c.text('Domain not found', 404)
+
+  // Export exposes the whole zone, so record-level clearance alone is not
+  // enough — full zone visibility is required.
+  const userLevel = await getPermissionLevel(c.env.record_manager_db, user, domain.id)
+  if (!canViewDomain(user.role, userLevel, false)) return c.text('Forbidden', 403)
+
+  const format = c.req.query('format') === 'csv' ? 'csv' : 'bind'
+  const cf = new CloudflareClient(c.get('settings').CF_API_TOKEN)
+  let records: any[]
+  try {
+    records = await cf.listRecords(domain.zone_id)
+  } catch (e: any) {
+    await setFlash(c, { type: 'error', text: `Could not load DNS records: ${e.message}` })
+    return c.redirect(`/domains/${domain.id}`)
+  }
+
+  const body = format === 'csv'
+    ? formatRecordsCsv(records)
+    : formatRecordsBind(domain.zone_name, records)
+
+  return new Response(body, {
+    headers: {
+      'Content-Type': format === 'csv' ? 'text/csv; charset=utf-8' : 'text/plain; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${domain.zone_name}.${format}"`
+    }
+  })
+})
+
+domains.post('/:id/import', async (c) => {
+  const auth = requireUser(c)
+  if ('denied' in auth) return auth.denied
+  const user = auth.user
+
+  // One import can fan out into hundreds of Cloudflare writes — keep it rare.
+  if (!rateLimit(`import:${user.id}`, 10, 5 * 60_000)) {
+    await setFlash(c, { type: 'error', text: 'Import rate limit reached (10 per 5 minutes). Try again shortly.' })
+    return c.redirect(`/domains`)
+  }
+
+  const domain = await loadDomain(c, c.req.param('id'))
+  if (!domain) return c.text('Domain not found', 404)
+
+  const userLevel = await getPermissionLevel(c.env.record_manager_db, user, domain.id)
+  if (!canAddRecords(user.role, userLevel)) return c.text('Forbidden', 403)
+
+  const body = await c.req.parseBody() as Record<string, string>
+  const text = String(body.zonefile || '')
+  const entries = String(body.format || 'bind') === 'csv' ? parseCsv(text) : parseBindZoneFile(text)
+
+  if (entries.length === 0) {
+    await setFlash(c, { type: 'error', text: 'Nothing to import — no usable entries found.' })
+    return c.redirect(`/domains/${domain.id}`)
+  }
+  if (entries.length > IMPORT_MAX_ENTRIES) {
+    await setFlash(c, { type: 'error', text: `Import is capped at ${IMPORT_MAX_ENTRIES} entries per batch.` })
+    return c.redirect(`/domains/${domain.id}`)
+  }
+
+  const cf = new CloudflareClient(c.get('settings').CF_API_TOKEN)
+  let created = 0
+  let blocked = 0
+  let invalid = 0
+  const failures: string[] = []
+
+  for (const entry of entries) {
+    // Parser errors come back as pseudo-entries with an empty name.
+    if (!entry.name && entry.content) {
+      invalid++
+      if (failures.length < 5) failures.push(`line ${entry.line}: ${entry.content}`)
+      continue
+    }
+
+    const { errors, value: record } = validateRecordInput({
+      type: entry.type,
+      name: entry.name,
+      content: entry.content,
+      ttl: String(entry.ttl),
+      priority: entry.priority != null ? String(entry.priority) : ''
+    })
+    if (!record) {
+      invalid++
+      if (failures.length < 5) failures.push(`line ${entry.line}: ${errors.join(' ')}`)
+      continue
+    }
+
+    if (await isBlacklisted(c.env.record_manager_db, record.name)) {
+      blocked++
+      continue
+    }
+
+    try {
+      const result = await cf.createRecord(domain.zone_id, record)
+      if (result?.id) {
+        await c.env.record_manager_db.batch([
+          c.env.record_manager_db.prepare(
+            'INSERT INTO record_metadata (record_id, domain_id, created_by_email) VALUES (?, ?, ?)'
+          ).bind(result.id, domain.id, user.email),
+          c.env.record_manager_db.prepare(
+            "INSERT INTO record_history (domain_id, record_id, name, type, content, ttl, action, actor_email) VALUES (?, ?, ?, ?, ?, ?, 'CREATE', ?)"
+          ).bind(domain.id, result.id, record.name, record.type, record.content, record.ttl ?? null, user.email)
+        ])
+      }
+      created++
+    } catch (e: any) {
+      if (failures.length < 5) failures.push(`${record.name}: ${e.message}`)
+    }
+  }
+
+  await logAudit(c.env.record_manager_db, user.email, 'IMPORT_RECORDS', 'DOMAIN', domain.zone_name,
+    { created, blocked, invalid, total: entries.length })
+
+  const parts = [`${created} created`]
+  if (blocked) parts.push(`${blocked} blocked by blacklist`)
+  if (invalid) parts.push(`${invalid} invalid`)
+  parts.push(...failures.slice(0, 3))
+  await setFlash(c, {
+    type: created > 0 ? 'success' : 'error',
+    text: `Import finished — ${parts.join('; ')}.`
+  })
+  return c.redirect(`/domains/${domain.id}`)
+})
+
+// ---------------------------------------------------------------------------
+// Record change history
+// ---------------------------------------------------------------------------
+
+const HISTORY_PAGE_SIZE = 50
+
+domains.get('/:id/history', async (c) => {
+  const auth = requireUser(c)
+  if ('denied' in auth) return auth.denied
+  const user = auth.user
+
+  const domain = await loadDomain(c, c.req.param('id'))
+  if (!domain) return c.text('Domain not found', 404)
+
+  const db = c.env.record_manager_db
+  const userLevel = await getPermissionLevel(db, user, domain.id)
+  const { results: myRecordPerms } = await db.prepare(
+    'SELECT COUNT(*) AS n FROM record_permissions WHERE user_id = ? AND domain_id = ?'
+  ).bind(user.id, domain.id).all()
+  const hasRecordPerms = ((myRecordPerms as any[])[0]?.n ?? 0) > 0
+  if (!canViewDomain(user.role, userLevel, hasRecordPerms)) return c.text('Forbidden', 403)
+
+  const pageRaw = parseInt(c.req.query('page') || '1', 10)
+  const page = Number.isSafeInteger(pageRaw) && pageRaw > 0 ? pageRaw : 1
+  const offset = (page - 1) * HISTORY_PAGE_SIZE
+
+  const [pageResult, countResult] = await db.batch([
+    db.prepare(
+      'SELECT * FROM record_history WHERE domain_id = ? ORDER BY id DESC LIMIT ? OFFSET ?'
+    ).bind(domain.id, HISTORY_PAGE_SIZE + 1, offset),
+    db.prepare('SELECT COUNT(*) AS total FROM record_history WHERE domain_id = ?').bind(domain.id)
+  ]) as any
+  const entries: any[] = pageResult.results
+  const total = Number((countResult.results[0] as any)?.total ?? 0)
+  const rows = entries.slice(0, HISTORY_PAGE_SIZE)
+  const hasPrev = page > 1
+  const hasNext = entries.length > HISTORY_PAGE_SIZE
+  const pageCount = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE))
+
+  return c.html(layout(`Change History - ${domain.zone_name}`, (
+    <div class="max-w-5xl mx-auto py-4">
+      <div class="mb-8 border-b border-slate-200 pb-5 flex flex-col md:flex-row justify-between md:items-end gap-3">
+        <div>
+          <h2 class="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Change History</h2>
+          <p class="text-slate-500 text-sm">Every create, update and deletion in <span class="font-mono text-indigo-600 font-bold">{domain.zone_name}</span> — kept even after records are removed. Page {page} of {pageCount} ({total} events).</p>
+        </div>
+        <a href={`/domains/${domain.id}`} class="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition text-xs font-bold whitespace-nowrap">&larr; Back to records</a>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-slate-200">
+          <thead class="table-header rounded-lg">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">When</th>
+              <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">Action</th>
+              <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">Record</th>
+              <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">Content</th>
+              <th class="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">By</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 bg-transparent">
+            {rows.map(h => (
+              <tr class="hover:bg-slate-50/50 transition-colors" key={h.id}>
+                <td class="px-4 py-3 whitespace-nowrap text-xs text-slate-500 font-mono">{h.created_at}</td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <Badge type={h.action === 'CREATE' ? 'success' : h.action === 'DELETE' ? 'error' : 'warning'}>{h.action}</Badge>
+                </td>
+                <td class="px-4 py-3">
+                  <div class="text-sm font-semibold text-slate-900 font-mono">{h.name}</div>
+                  <div class="text-[10px] text-slate-400 font-mono uppercase">{h.type}{h.ttl && h.ttl !== 1 ? ` · TTL ${h.ttl}s` : ''}</div>
+                </td>
+                <td class="px-4 py-3 max-w-[320px]"><span class="text-xs text-slate-700 font-mono break-all line-clamp-2">{h.content || <span class="text-slate-400 italic">—</span>}</span></td>
+                <td class="px-4 py-3 whitespace-nowrap text-xs text-slate-600 font-mono">{h.actor_email}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colspan={5} class="px-4 py-10 text-center text-xs text-slate-400 italic font-mono">No changes recorded for this zone yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {(hasPrev || hasNext) && (
+        <div class="mt-6 flex gap-2 justify-center text-xs font-bold">
+          {hasPrev && <a href={`/domains/${domain.id}/history?page=${page - 1}`} class="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition">&larr; Newer</a>}
+          {hasNext && <a href={`/domains/${domain.id}/history?page=${page + 1}`} class="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition">Older &rarr;</a>}
+        </div>
+      )}
+    </div>
+  ), user, c.get('flash')))
 })
 
 export default domains

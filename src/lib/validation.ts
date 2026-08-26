@@ -14,6 +14,7 @@ export type RecordInput = {
   content: string
   ttl: number
   proxied: boolean
+  priority?: number | null
 }
 
 /**
@@ -46,6 +47,16 @@ export function validateRecordInput(body: Record<string, string | File>): { erro
     ttl = TTL_AUTO
   }
 
+  // Priority only means something for MX records.
+  let priority: number | null = null
+  if (type === 'MX' && body.priority !== undefined && String(body.priority).trim() !== '') {
+    priority = parseInt(String(body.priority), 10)
+    if (!Number.isSafeInteger(priority) || priority < 0 || priority > 65535) {
+      errors.push('MX priority must be between 0 and 65535.')
+      priority = null
+    }
+  }
+
   if (errors.length > 0) return { errors }
 
   return {
@@ -55,7 +66,8 @@ export function validateRecordInput(body: Record<string, string | File>): { erro
       name,
       content,
       ttl,
-      proxied: body.proxied === 'on'
+      proxied: body.proxied === 'on',
+      priority
     }
   }
 }

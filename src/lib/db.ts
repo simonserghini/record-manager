@@ -50,6 +50,23 @@ export async function logAudit(db: D1Database, userEmail: string, action: string
 }
 
 /**
+ * Append one entry to a domain's record change history. Rows survive record
+ * deletion — this is the "what did this record look like before?" trail.
+ */
+export async function writeRecordHistory(
+  db: D1Database,
+  domainId: number,
+  recordId: string,
+  record: { name: string; type: string; content: string; ttl?: number },
+  action: 'CREATE' | 'UPDATE' | 'DELETE',
+  actorEmail: string
+) {
+  await db.prepare(
+    "INSERT INTO record_history (domain_id, record_id, name, type, content, ttl, action, actor_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).bind(domainId, recordId, record.name, record.type, record.content, record.ttl ?? null, action, actorEmail).run()
+}
+
+/**
  * Blacklist patterns support '*' as a wildcard and are matched case-insensitively
  * against the full record name. Patterns are validated on insert so that the
  * regex built here can never throw or blow up on metacharacters.

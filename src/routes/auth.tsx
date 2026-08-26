@@ -2,6 +2,9 @@ import { Hono } from 'hono'
 import { setSignedCookie, deleteCookie } from 'hono/cookie'
 import { googleAuth } from '@hono/oauth-providers/google'
 import { layout } from '../templates/layout'
+import { buildSessionValue, bumpSessionEpoch } from '../lib/session'
+import { logAudit } from '../lib/db'
+import { rateLimit, clientIp } from '../lib/ratelimit'
 
 type Bindings = {
   record_manager_db: D1Database
@@ -34,10 +37,16 @@ function deniedPage(c: any, heading: string, message: string) {
   )))
 }
 
-auth.use('/google', (c, next) => {
+auth.use('/google', async (c, next) => {
   const settings = c.get('settings')
   if (!settings.GOOGLE_CLIENT_ID || !settings.GOOGLE_CLIENT_SECRET) {
     return c.text('Google OAuth not configured', 400)
+  }
+
+  // Brake on OAuth-start hammering (state churn, upstream rate limits).
+  // 10 starts/min per client IP is far above any human's cadence.
+  if (!rateLimit(`auth:${clientIp(c)}`, 10, 60_000)) {
+    return c.text('Too many sign-in attempts. Try again in a minute.', 429)
   }
 
   const googleAuthMiddleware = googleAuth({
@@ -60,7 +69,7 @@ auth.get('/google', async (c) => {
   const email = String(oauthUser.email).toLowerCase()
 
   const db = c.env.record_manager_db
-  let dbUser = await db.prepare('SELECT id, email, role FROM users WHERE email = ?').bind(email).first<{ id: number; email: string; role: string }>()
+  let dbUser = await db.prepare('SELECT id, email, role, session_epoch FROM users WHERE email = ?').bind(email).first<{ id: number; email: string; role: string; session_epoch: number }>()
 
   if (!dbUser) {
     const countRow = await db.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>()
@@ -79,12 +88,16 @@ auth.get('/google', async (c) => {
       SELECT ?, CASE WHEN EXISTS (SELECT 1 FROM users WHERE role = 'owner') THEN 'user' ELSE 'owner' END
       FROM (SELECT 1) WHERE true
       ON CONFLICT(email) DO NOTHING
-      RETURNING id, email, role
-    `).bind(email).first<{ id: number; email: string; role: string }>()
-    dbUser = inserted ?? await db.prepare('SELECT id, email, role FROM users WHERE email = ?').bind(email).first<{ id: number; email: string; role: string }>()
+      RETURNING id, email, role, session_epoch
+    `).bind(email).first<{ id: number; email: string; role: string; session_epoch: number }>()
+    dbUser = inserted ?? await db.prepare('SELECT id, email, role, session_epoch FROM users WHERE email = ?').bind(email).first<{ id: number; email: string; role: string; session_epoch: number }>()
   }
 
-  await setSignedCookie(c, 'user', email, c.get('systemSecret'), {
+  if (!dbUser) return deniedPage(c, 'Sign-in failed', 'Could not create or load your account. Please try again.')
+
+  // The signed value embeds the account's current session epoch so bumped
+  // epochs invalidate older cookies.
+  await setSignedCookie(c, 'user', buildSessionValue(email, dbUser.session_epoch ?? 0), c.get('systemSecret'), {
     path: '/',
     secure: true,
     httpOnly: true,
@@ -98,6 +111,18 @@ auth.get('/google', async (c) => {
 // Logout is POST-only — a GET would let any page force users out (and signal
 // their session state) via a bare <img src="/auth/logout">.
 auth.post('/logout', (c) => {
+  deleteCookie(c, 'user', { path: '/' })
+  return c.redirect('/')
+})
+
+// Signs out EVERY device by bumping the account's session epoch, which
+// invalidates all previously issued cookies at once.
+auth.post('/logout-all', async (c) => {
+  const user = c.get('user')
+  if (user) {
+    await bumpSessionEpoch(c.env.record_manager_db, user.id)
+    await logAudit(c.env.record_manager_db, user.email, 'LOGOUT_ALL', 'USER', user.email, {})
+  }
   deleteCookie(c, 'user', { path: '/' })
   return c.redirect('/')
 })

@@ -2,9 +2,11 @@
   "name": "record-manager",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy --minify",
+    "dev": "npm run build:css && wrangler dev",
+    "deploy": "npm run build:css && wrangler deploy --minify",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build:css": "tailwindcss -i src/styles.css -o public/app.css --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
@@ -14,6 +16,9 @@
     "@cloudflare/vitest-pool-workers": "^0.16.6",
     "@cloudflare/workers-types": "^4.20260517.1",
     "@hono/oauth-providers": "^0.8.5",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/node": "^26.3.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vitest": "^4.1.6",
     "wrangler": "^4.4.0"

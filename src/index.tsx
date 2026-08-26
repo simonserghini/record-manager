@@ -5,9 +5,9 @@ import { secureHeaders } from 'hono/secure-headers'
 import { Fragment } from 'hono/jsx'
 import { HTTPException } from 'hono/http-exception'
 import { CloudflareClient } from './cloudflare'
-import { getSettings, ensureSystemSecret, isConfigured } from './lib/db'
+import { getSettings, ensureSystemSecret, isConfigured, logAudit } from './lib/db'
 import type { Settings } from './lib/db'
-import { getFlash, FlashMessage } from './lib/session'
+import { getFlash, FlashMessage, parseSessionValue } from './lib/session'
 import { layout } from './templates/layout'
 
 // Routes
@@ -16,6 +16,8 @@ import setup from './routes/setup'
 import domains from './routes/domains'
 import users, { blacklist } from './routes/users'
 import logs from './routes/logs'
+import tokens from './routes/tokens'
+import api from './routes/api'
 
 type Bindings = {
   record_manager_db: D1Database
@@ -35,12 +37,14 @@ type Variables = {
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 // Global Middleware — security headers first.
-// The Tailwind CDN + Google Fonts are required by the UI; everything else is locked down.
+// All app CSS/JS is bundled and served from /public via Workers Static
+// Assets, so scripts need nothing beyond 'self'; only Google Fonts remain
+// as an external origin (stylesheets + font files).
 const securityHeaders = secureHeaders({
   contentSecurityPolicy: {
     defaultSrc: ["'self'"],
-    scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.tailwindcss.com'],
-    styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+    scriptSrc: ["'self'"],
+    styleSrc: ["'self'", 'https://fonts.googleapis.com'],
     fontSrc: ["'self'", 'https://fonts.gstatic.com'],
     imgSrc: ["'self'", 'data:'],
     connectSrc: ["'self'"],
@@ -50,14 +54,18 @@ const securityHeaders = secureHeaders({
   }
 })
 app.use('*', securityHeaders)
-app.use('*', csrf())
+// CSRF protection guards cookie-session form posts only. The JSON API under
+// /api authenticates via explicit Bearer tokens — there are no ambient
+// credentials to forge, and requiring form-style Origin headers there would
+// break every body-less curl -X DELETE.
+const csrfProtection = csrf()
+app.use('*', async (c, next) => {
+  if (c.req.path.startsWith('/api/')) return next()
+  return csrfProtection(c, next)
+})
 
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url)
-  if (url.pathname.startsWith('/static')) {
-    return next()
-  }
-
   const db = c.env.record_manager_db
 
   // One settings query covers both the signing secret and app configuration;
@@ -70,14 +78,22 @@ app.use('*', async (c, next) => {
   const userEmail = await getSignedCookie(c, secret, 'user')
   if (userEmail) {
     // Look the user up on every request so deleted/blacklisted accounts lose
-    // access immediately instead of when their cookie expires.
-    const user = await db.prepare('SELECT id, email, role FROM users WHERE email = ?').bind(userEmail).first()
-    c.set('user', user ?? null)
+    // access immediately instead of when their cookie expires. The cookie
+    // also carries a session_epoch — bumped to revoke all previously
+    // issued sessions for that account.
+    const session = parseSessionValue(userEmail)
+    const user = await db.prepare('SELECT id, email, role, session_epoch FROM users WHERE email = ?').bind(session.email).first<any>()
+    c.set('user', user && user.session_epoch === session.epoch ? user : null)
   }
 
   c.set('flash', await getFlash(c))
 
-  if (url.pathname === '/setup' || url.pathname.startsWith('/auth')) {
+  if (url.pathname === '/setup' || url.pathname === '/healthz' || url.pathname.startsWith('/auth')) {
+    return next()
+  }
+  // API routes authenticate via Bearer token inside src/routes/api.tsx and
+  // answer in JSON — cookie sessions and the HTML setup redirect don't apply.
+  if (url.pathname.startsWith('/api/')) {
     return next()
   }
 
@@ -179,7 +195,7 @@ app.get('/dashboard', async (c) => {
           <p class="text-slate-500 text-sm">Authenticated clearance: <span class="text-indigo-600 font-bold uppercase font-mono text-xs px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200">{user.role}</span>. Scanned {displayZones.length} domains.</p>
         </div>
         <div class="relative w-full md:w-64">
-          <input type="text" id="domain-search" placeholder="Search domains..." class="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" onkeyup="filterDomains()" />
+          <input type="text" id="domain-search" placeholder="Search domains..." data-filter-target="#domain-grid .domain-card" class="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" />
           <svg class="absolute left-3 top-3.5 h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
@@ -202,7 +218,7 @@ app.get('/dashboard', async (c) => {
           {displayZones.map((z: any) => {
             const synced = syncedMap.get(z.id) as any
             return (
-              <div class="domain-card group relative bg-white border border-slate-200 rounded-2xl p-5 hover:border-indigo-300 transition-all cursor-pointer shadow-sm" onclick={`location.href='${synced ? `/domains/${synced.id}` : '#'}'`} data-name={z.name} key={z.id}>
+              <div class="domain-card group relative bg-white border border-slate-200 rounded-2xl p-5 hover:border-indigo-300 transition-all cursor-pointer shadow-sm" data-navigate={synced ? `/domains/${synced.id}` : '#'} data-name={z.name} key={z.id}>
                 <div class="flex justify-between items-start mb-4">
                   <div class="h-10 w-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors duration-300">
                     <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -223,7 +239,7 @@ app.get('/dashboard', async (c) => {
                     <a href={`/domains/${synced.id}`} class="text-xs font-bold text-indigo-600 hover:text-indigo-500 transition">Manage DNS &rarr;</a>
                   ) : (
                     user.role === 'owner' ? (
-                      <form method="post" action="/domains/sync" style="margin:0" onclick="event.stopPropagation()">
+                      <form method="post" action="/domains/sync" style="margin:0">
                         <input type="hidden" name="id" value={z.id} />
                         <input type="hidden" name="name" value={z.name} />
                         <button type="submit" class="text-xs font-bold text-slate-400 hover:text-indigo-600 transition">Register for Management</button>
@@ -235,16 +251,6 @@ app.get('/dashboard', async (c) => {
           })}
         </div>
       )}
-      <script dangerouslySetInnerHTML={{ __html: `
-        function filterDomains() {
-          const query = document.getElementById('domain-search').value.toLowerCase();
-          const cards = document.querySelectorAll('.domain-card');
-          cards.forEach(card => {
-            const name = card.getAttribute('data-name').toLowerCase();
-            card.style.display = name.includes(query) ? '' : 'none';
-          });
-        }
-      `}} />
       </Fragment>
     ), user, flash))
   } catch (e: any) {
@@ -297,6 +303,17 @@ app.onError(async (err, c) => {
   return c.res
 })
 
+// Health check — exempt from the configured-redirect so monitors can hit it
+// on a fresh deployment. Verifies D1 reachability without leaking detail.
+app.get('/healthz', async (c) => {
+  try {
+    await c.env.record_manager_db.prepare('SELECT 1').first()
+    return c.json({ ok: true, time: new Date().toISOString() })
+  } catch {
+    return c.json({ ok: false }, 503)
+  }
+})
+
 // Mount Routes
 app.route('/auth', auth)
 app.route('/setup', setup)
@@ -304,5 +321,41 @@ app.route('/domains', domains)
 app.route('/users', users)
 app.route('/blacklist', blacklist)
 app.route('/logs', logs)
+app.route('/tokens', tokens)
+app.route('/api', api)
 
-export default app
+// Nightly cron: drop local management state for domains whose zone has been
+// removed from the Cloudflare account, so stale zones don't linger forever.
+async function reconcileOrphanedDomains(env: Bindings) {
+  const settings = await getSettings(env.record_manager_db)
+  if (!settings.CF_API_TOKEN) return
+  const cf = new CloudflareClient(settings.CF_API_TOKEN)
+
+  let zones: any[] = []
+  try {
+    zones = await cf.listZones()
+  } catch {
+    return // unreachable API — retry tomorrow rather than unsync everything
+  }
+  const liveZoneIds = new Set(zones.map((z: any) => z.id))
+
+  const { results: synced } = await env.record_manager_db.prepare('SELECT id, zone_id, zone_name FROM domains').all()
+  for (const d of (synced as any[])) {
+    if (!liveZoneIds.has(d.zone_id)) {
+      // FKs cascade the permission/metadata cleanup, mirroring manual unsync.
+      await env.record_manager_db.prepare('DELETE FROM domains WHERE id = ?').bind(d.id).run()
+      await logAudit(env.record_manager_db, 'system@cron', 'CRON_UNSYNC_ORPHANED', 'DOMAIN', d.zone_name, { zone_id: d.zone_id })
+    }
+  }
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled: async (_event: unknown, env: Bindings, _ctx: ExecutionContext) => {
+    try {
+      await reconcileOrphanedDomains(env)
+    } catch (e) {
+      console.error('cron reconciliation failed:', e)
+    }
+  }
+}

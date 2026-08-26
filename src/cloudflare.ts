@@ -97,14 +97,14 @@ export class CloudflareClient {
     return cfListAll(this.token, `/zones/${zoneId}/dns_records`)
   }
 
-  async createRecord(zoneId: string, record: { type: string; name: string; content: string; ttl?: number; proxied?: boolean }) {
+  async createRecord(zoneId: string, record: { type: string; name: string; content: string; ttl?: number; proxied?: boolean; priority?: number | null }) {
     return cfRequest(this.token, `/zones/${zoneId}/dns_records`, {
       method: 'POST',
       body: JSON.stringify(record),
     });
   }
 
-  async updateRecord(zoneId: string, recordId: string, record: { type: string; name: string; content: string; ttl?: number; proxied?: boolean }) {
+  async updateRecord(zoneId: string, recordId: string, record: { type: string; name: string; content: string; ttl?: number; proxied?: boolean; priority?: number | null }) {
     return cfRequest(this.token, `/zones/${zoneId}/dns_records/${recordId}`, {
       method: 'PUT',
       body: JSON.stringify(record),

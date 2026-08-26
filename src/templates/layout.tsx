@@ -6,6 +6,7 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
   const sidebarItems = [
     { name: 'Dashboard', href: '/dashboard', icon: <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /> },
     { name: 'Domains', href: '/domains', icon: <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /> },
+    { name: 'API Tokens', href: '/tokens', icon: <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /> },
     ...(user?.role === 'owner' || user?.role === 'admin' ? [{ name: 'Audit Logs', href: '/logs', icon: <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /> }] : []),
     ...(user?.role === 'owner' ? [
       { name: 'User Management', href: '/users', icon: <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /> },
@@ -22,108 +23,11 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>{title} - Record Manager</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script dangerouslySetInnerHTML={{ __html: `
-            tailwind.config = {
-                theme: {
-                    extend: {
-                        colors: {
-                            brand: {
-                                bg: '#f8fafc',
-                                panel: '#ffffff',
-                                deep: '#f1f5f9',
-                                dark: '#e2e8f0',
-                                border: '#e2e8f0',
-                                text: '#0f172a',
-                                primary: '#4f46e5',
-                                secondary: '#6366f1',
-                            }
-                        },
-                        fontFamily: {
-                            sans: ['Inter', 'sans-serif'],
-                            mono: ['JetBrains Mono', 'monospace'],
-                            display: ['Inter', 'sans-serif'],
-                        }
-                    }
-                }
-            }
-        `}} />
-        <style dangerouslySetInnerHTML={{ __html: `
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-            body { font-family: 'Inter', sans-serif; }
-            .font-mono { font-family: 'JetBrains Mono', monospace; }
-
-            .main-card {
-                background: #ffffff;
-                border: 1px solid #e2e8f0;
-                box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
-            }
-
-            .table-header { background: #f8fafc; }
-
-            input[type="text"], input[type="password"], input[type="email"], input[type="number"], select {
-                background: #ffffff;
-                border: 1px solid #cbd5e1;
-                color: #0f172a;
-                border-radius: 6px;
-                padding: 0.5rem 0.75rem;
-                font-size: 0.875rem;
-                transition: all 0.1s ease-in-out;
-            }
-            input:focus, select:focus {
-                outline: none;
-                border-color: #4f46e5;
-                box-shadow: 0 0 0 1px #4f46e5;
-            }
-
-            input[type="checkbox"] {
-                accent-color: #4f46e5;
-            }
-
-            .btn-primary {
-                background: #0f172a;
-                color: #ffffff;
-                border-radius: 6px;
-                padding: 0.5rem 1rem;
-                font-size: 0.875rem;
-                font-weight: 500;
-                transition: all 0.15s ease-in-out;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .btn-primary:hover {
-                background: #1e293b;
-            }
-
-            .badge {
-                font-size: 0.75rem;
-                font-weight: 500;
-                padding: 0.125rem 0.625rem;
-                border-radius: 9999px;
-                display: inline-flex;
-                align-items: center;
-            }
-            .badge-owner { background-color: #fef2f2; color: #ef4444; border: 1px solid #fee2e2; }
-            .badge-admin { background-color: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; }
-            .badge-manager { background-color: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
-            .badge-user { background-color: #f0f9ff; color: #0284c7; border: 1px solid #e0f2fe; }
-            .badge-success { background-color: #ecfdf5; color: #059669; border: 1px solid #d1fae5; }
-            .badge-warning { background-color: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
-            .badge-error { background-color: #fef2f2; color: #ef4444; border: 1px solid #fee2e2; }
-
-            .flash-enter { animation: flash-in 0.25s ease-out; }
-            @keyframes flash-in {
-                from { opacity: 0; transform: translateY(-8px); }
-                to { opacity: 1; transform: translateY(0); }
-            }
-
-            .sidebar-active {
-                background: #f1f5f9;
-                color: #0f172a !important;
-                font-weight: 600;
-            }
-        `}} />
+        <script src="/theme.js"></script>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+        <link rel="stylesheet" href="/app.css" />
     </head>
   )
 
@@ -132,6 +36,10 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
       <html lang="en" class="h-full bg-slate-50">
         {head}
         <body class="h-full bg-slate-50 text-slate-900 flex flex-col justify-between min-h-screen">
+          <button type="button" data-theme-toggle title="Toggle dark mode" class="fixed top-4 right-4 z-10 p-2 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-800 cursor-pointer shadow-sm">
+            <svg class="h-4 w-4 dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+            <svg class="h-4 w-4 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+          </button>
           <div class="flex-1 flex flex-col items-center justify-center px-4 py-16 sm:px-6 lg:px-8">
             {flash && <Flash message={flash} />}
             {isLoginPage ? content : (
@@ -181,13 +89,24 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
                   <p class="text-xs font-medium text-slate-700 truncate font-mono">{user.email}</p>
                   <div class="flex justify-between items-center mt-2">
                     <span class={`badge badge-${user.role}`}>{user.role}</span>
-                    <form method="post" action="/auth/logout" style="display:inline;">
-                      <button type="submit" class="text-xs text-slate-500 hover:text-slate-800 font-medium hover:underline flex items-center gap-1 cursor-pointer">
-                        Logout
-                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                    <div class="flex items-center gap-2">
+                      <button type="button" data-theme-toggle title="Toggle dark mode" class="text-slate-500 hover:text-slate-800 cursor-pointer">
+                        <svg class="h-4 w-4 dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+                        <svg class="h-4 w-4 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
                       </button>
-                    </form>
+                      <form method="post" action="/auth/logout" style="display:inline;">
+                        <button type="submit" class="text-xs text-slate-500 hover:text-slate-800 font-medium hover:underline flex items-center gap-1 cursor-pointer">
+                          Logout
+                          <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                        </button>
+                      </form>
+                    </div>
                   </div>
+                  <form method="post" action="/auth/logout-all" style="display:inline;">
+                    <button type="submit" class="mt-2 text-[10px] text-slate-400 hover:text-slate-700 font-medium hover:underline cursor-pointer" data-confirm="Sign out on every device?">
+                      Sign out everywhere
+                    </button>
+                  </form>
                 </div>
               </div>
             </div>
@@ -209,18 +128,7 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
             </main>
           </div>
         </div>
-        <script dangerouslySetInnerHTML={{ __html: `
-          document.addEventListener('DOMContentLoaded', () => {
-            const currentPath = window.location.pathname;
-            const navLinks = document.querySelectorAll('nav a');
-            navLinks.forEach(link => {
-              const href = link.getAttribute('href');
-              if (href === currentPath || (currentPath.startsWith(href) && href !== '/' && href !== '/dashboard')) {
-                link.classList.add('sidebar-active');
-              }
-            });
-          });
-        `}} />
+        <script src="/app.js" defer></script>
       </body>
     </html>
   )

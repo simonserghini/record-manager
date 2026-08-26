@@ -4,6 +4,16 @@
 	"main": "src/index.tsx",
 	"compatibility_date": "2026-05-16",
 	"workers_dev": true,
+	// Static assets (built CSS + client JS) are served at the edge before the
+	// Worker runs; everything else hits the Worker as usual.
+	"assets": {
+		"directory": "public",
+		"not_found_handling": "none"
+	},
+	// Nightly reconciliation of domains whose Cloudflare zone has vanished.
+	"triggers": {
+		"crons": ["17 4 * * *"]
+	},
 	"vars": {
 		// Optional but recommended for production deployments: the only email
 		// allowed to claim the initial owner account on first login.

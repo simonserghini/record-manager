@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import { Fragment } from 'hono/jsx'
 import { layout } from '../templates/layout'
 import { Badge, Button } from '../templates/components'
-import { setFlash } from '../lib/session'
+import { setFlash, bumpSessionEpoch } from '../lib/session'
 import { logAudit, isValidBlacklistPattern } from '../lib/db'
 import { isValidLevel } from '../lib/auth'
 import type { Role } from '../lib/auth'
@@ -148,8 +148,13 @@ users.get('/', async (c) => {
                   )}
                 </td>
                 <td class="px-4 py-4 whitespace-nowrap text-right text-xs font-bold">
+                  {user.role === 'owner' && u.id !== user.id && (
+                    <form method="post" action={`/users/${u.id}/transfer-ownership`} style="display:inline; margin-right:1rem;" data-confirm={`Transfer ownership to ${u.email}? You will become an admin.`}>
+                      <button type="submit" class="text-indigo-600 hover:text-indigo-500 font-bold transition">Make Owner</button>
+                    </form>
+                  )}
                   {canManageTarget && (
-                    <form method="post" action={`/users/${u.id}/delete`} style="display:inline;" onsubmit="return confirm('Are you sure?')">
+                    <form method="post" action={`/users/${u.id}/delete`} style="display:inline;" data-confirm="Are you sure?">
                       <button type="submit" class="text-rose-500 hover:text-rose-600 font-bold transition">Remove Identity</button>
                     </form>
                   )}
@@ -211,6 +216,8 @@ users.post('/', async (c) => {
   await c.env.record_manager_db.prepare(
     'INSERT INTO users (email, role) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET role = excluded.role'
   ).bind(email, role).run()
+  // A role change revokes every session the account already holds.
+  if (existing) await bumpSessionEpoch(c.env.record_manager_db, existing.id)
 
   await logAudit(c.env.record_manager_db, actor.email, existing ? 'UPDATE_USER' : 'CREATE_USER', 'USER', email, { role })
   await setFlash(c, { type: 'success', text: `Identity ${email} provisioned.` })
@@ -298,6 +305,35 @@ users.post('/:id/delete', async (c) => {
 
   await logAudit(c.env.record_manager_db, actor.email, 'DELETE_USER', 'USER', target.email, {})
   await setFlash(c, { type: 'info', text: `Identity ${target.email} revoked.` })
+  return c.redirect('/users')
+})
+
+/**
+ * Ownership transfer: the current owner hands the crown to another existing
+ * account. Atomic role swap in one batch; both accounts have their session
+ * epoch bumped so every previously issued cookie is dead afterwards.
+ */
+users.post('/:id/transfer-ownership', async (c) => {
+  const denied = await requireGlobalAdmin(c)
+  if (denied) return denied
+
+  const actor = c.get('user')
+  if (actor.role !== 'owner') return c.text('Forbidden', 403)
+
+  const target = await findTargetUser(c, c.req.param('id'))
+  if (!target || target.role === 'owner' || target.id === actor.id) {
+    await setFlash(c, { type: 'error', text: 'Ownership can only be transferred to a different existing account.' })
+    return c.redirect('/users')
+  }
+
+  const db = c.env.record_manager_db
+  await db.batch([
+    db.prepare("UPDATE users SET role = 'admin', session_epoch = session_epoch + 1 WHERE id = ?").bind(actor.id),
+    db.prepare("UPDATE users SET role = 'owner', session_epoch = session_epoch + 1 WHERE id = ?").bind(target.id)
+  ])
+
+  await logAudit(db, actor.email, 'TRANSFER_OWNERSHIP', 'USER', target.email, { from: actor.email })
+  await setFlash(c, { type: 'success', text: `${target.email} is now the owner. You have been made an admin.` })
   return c.redirect('/users')
 })
 
