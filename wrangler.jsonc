@@ -5,6 +5,9 @@
 	"compatibility_date": "2026-05-16",
 	"workers_dev": true,
 	"vars": {
+		// Optional but recommended for production deployments: the only email
+		// allowed to claim the initial owner account on first login.
+		// "OWNER_EMAIL": "you@example.com"
 	},
 	"d1_databases": [
 		{

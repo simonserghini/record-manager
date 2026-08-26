@@ -38,7 +38,7 @@ You can give an engineer access to **one single record** (like `dev.api.com`) wi
     npx wrangler d1 migrations apply record-manager-db --remote
     ```
 3.  **Setup**: Open your new Worker URL. The app will guide you through connecting your Cloudflare API Token and Google OAuth keys.
-4.  **Ownership**: The very first person to log in via Google after setup automatically becomes the **System Owner**.
+4.  **Ownership**: The very first person to log in via Google after setup becomes the **System Owner**. For production deployments, set the optional `OWNER_EMAIL` variable in `wrangler.jsonc` first — it restricts the owner claim to that exact address, so a stranger can't grab your instance by logging in first.
 
 ---
 
@@ -55,9 +55,19 @@ If you want to tinker with the code:
 ## 🔒 A Note on Security
 
 We take security seriously because this tool manages your infrastructure.
-*   **Sessions**: All user sessions are cryptographically signed using a unique system secret.
-*   **Secrets**: We never store your Cloudflare tokens in the source code; they live safely in your private D1 instance.
-*   **Headers**: Every request is protected by industry-standard security headers.
+*   **Enforced Authorization**: Every mutating endpoint (records, users, clearances, blacklist, settings) verifies role *and* record-level permissions server-side — the UI hiding a button is never the only gate.
+*   **Sessions**: All user sessions are cryptographically signed using a unique per-instance secret, re-validated against the database on every request (deleted accounts lose access immediately).
+*   **Bootstrap Lockout**: The `/setup` wizard is only reachable anonymously while the system is unconfigured; afterwards it's owner-only, and stored secrets are never echoed back into the form.
+*   **Blacklist Enforcement**: Protected namespace rules are checked on every record create and rename — not just displayed.
+*   **Headers & CSRF**: Strict Content-Security-Policy, HSTS-class secure headers, and origin-checked CSRF protection on all mutations.
+*   **Secrets**: Cloudflare tokens and OAuth secrets live only in your D1 database and are write-only through the UI.
+*   **Audit Trail**: Every permission change, record deployment, and blocked blacklist attempt is logged with actor and details.
+
+### Development
+
+```bash
+npm run typecheck   # strict TypeScript check across the whole worker
+```
 
 ---
 

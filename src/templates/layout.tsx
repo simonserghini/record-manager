@@ -1,4 +1,4 @@
-import { h, Fragment } from 'hono/jsx'
+import { Fragment } from 'hono/jsx'
 import { FlashMessage } from '../lib/session'
 import { Flash } from './components'
 
@@ -31,14 +31,18 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
                             brand: {
                                 bg: '#f8fafc',
                                 panel: '#ffffff',
+                                deep: '#f1f5f9',
+                                dark: '#e2e8f0',
                                 border: '#e2e8f0',
                                 text: '#0f172a',
                                 primary: '#4f46e5',
+                                secondary: '#6366f1',
                             }
                         },
                         fontFamily: {
                             sans: ['Inter', 'sans-serif'],
                             mono: ['JetBrains Mono', 'monospace'],
+                            display: ['Inter', 'sans-serif'],
                         }
                     }
                 }
@@ -48,13 +52,15 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
             body { font-family: 'Inter', sans-serif; }
             .font-mono { font-family: 'JetBrains Mono', monospace; }
-            
+
             .main-card {
                 background: #ffffff;
                 border: 1px solid #e2e8f0;
                 box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
             }
-            
+
+            .table-header { background: #f8fafc; }
+
             input[type="text"], input[type="password"], input[type="email"], input[type="number"], select {
                 background: #ffffff;
                 border: 1px solid #cbd5e1;
@@ -69,7 +75,11 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
                 border-color: #4f46e5;
                 box-shadow: 0 0 0 1px #4f46e5;
             }
-            
+
+            input[type="checkbox"] {
+                accent-color: #4f46e5;
+            }
+
             .btn-primary {
                 background: #0f172a;
                 color: #ffffff;
@@ -96,7 +106,17 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
             }
             .badge-owner { background-color: #fef2f2; color: #ef4444; border: 1px solid #fee2e2; }
             .badge-admin { background-color: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; }
+            .badge-manager { background-color: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
             .badge-user { background-color: #f0f9ff; color: #0284c7; border: 1px solid #e0f2fe; }
+            .badge-success { background-color: #ecfdf5; color: #059669; border: 1px solid #d1fae5; }
+            .badge-warning { background-color: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+            .badge-error { background-color: #fef2f2; color: #ef4444; border: 1px solid #fee2e2; }
+
+            .flash-enter { animation: flash-in 0.25s ease-out; }
+            @keyframes flash-in {
+                from { opacity: 0; transform: translateY(-8px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
 
             .sidebar-active {
                 background: #f1f5f9;
@@ -161,10 +181,12 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
                   <p class="text-xs font-medium text-slate-700 truncate font-mono">{user.email}</p>
                   <div class="flex justify-between items-center mt-2">
                     <span class={`badge badge-${user.role}`}>{user.role}</span>
-                    <a href="/auth/logout" class="text-xs text-slate-500 hover:text-slate-800 font-medium hover:underline flex items-center gap-1">
-                      Logout
-                      <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-                    </a>
+                    <form method="post" action="/auth/logout" style="display:inline;">
+                      <button type="submit" class="text-xs text-slate-500 hover:text-slate-800 font-medium hover:underline flex items-center gap-1 cursor-pointer">
+                        Logout
+                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                      </button>
+                    </form>
                   </div>
                 </div>
               </div>
@@ -206,9 +228,9 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
 
 const Footer = () => (
   <div class="py-6 border-t border-slate-200 text-center text-xs text-slate-400 font-mono flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-4">
-    <span>Record Manager v2.3 • Powered by Cloudflare Workers</span>
+    <span>Record Manager • Powered by Cloudflare Workers</span>
     <span class="hidden sm:inline text-slate-300">|</span>
-    <a href="https://github.com/simon-msdos/record-manager" target="_blank" class="hover:text-slate-600 underline flex items-center gap-1">
+    <a href="https://github.com/simon-msdos/record-manager" target="_blank" rel="noopener noreferrer" class="hover:text-slate-600 underline flex items-center gap-1">
       GitHub
     </a>
   </div>

@@ -1,9 +1,10 @@
 {
-  "name": "temp-hono",
+  "name": "record-manager",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
+    "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
@@ -13,6 +14,7 @@
     "@cloudflare/vitest-pool-workers": "^0.16.6",
     "@cloudflare/workers-types": "^4.20260517.1",
     "@hono/oauth-providers": "^0.8.5",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.6",
     "wrangler": "^4.4.0"
   }

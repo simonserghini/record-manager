@@ -12,6 +12,7 @@ export async function setFlash(c: Context, message: FlashMessage) {
     path: '/',
     secure: true,
     httpOnly: true,
+    sameSite: 'Lax',
     maxAge: 60 // 1 minute
   })
 }

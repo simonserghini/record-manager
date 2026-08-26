@@ -2,12 +2,13 @@ import { Hono } from 'hono'
 import { getSignedCookie } from 'hono/cookie'
 import { csrf } from 'hono/csrf'
 import { secureHeaders } from 'hono/secure-headers'
-import { h, Fragment } from 'hono/jsx'
+import { Fragment } from 'hono/jsx'
+import { HTTPException } from 'hono/http-exception'
 import { CloudflareClient } from './cloudflare'
-import { getSettings, ensureSystemSecret } from './lib/db'
+import { getSettings, ensureSystemSecret, isConfigured } from './lib/db'
+import type { Settings } from './lib/db'
 import { getFlash, FlashMessage } from './lib/session'
 import { layout } from './templates/layout'
-import { Card, Button } from './templates/components'
 
 // Routes
 import auth from './routes/auth'
@@ -21,10 +22,11 @@ type Bindings = {
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
   COOKIE_SECRET?: string
+  OWNER_EMAIL?: string
 }
 
 type Variables = {
-  settings: any
+  settings: Settings
   user: any
   systemSecret: string
   flash: FlashMessage | null
@@ -32,35 +34,54 @@ type Variables = {
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-// Global Middleware
-app.use('*', secureHeaders())
+// Global Middleware — security headers first.
+// The Tailwind CDN + Google Fonts are required by the UI; everything else is locked down.
+const securityHeaders = secureHeaders({
+  contentSecurityPolicy: {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.tailwindcss.com'],
+    styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+    fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+    imgSrc: ["'self'", 'data:'],
+    connectSrc: ["'self'"],
+    frameAncestors: ["'none'"],
+    baseUri: ["'self'"],
+    formAction: ["'self'"]
+  }
+})
+app.use('*', securityHeaders)
 app.use('*', csrf())
+
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url)
   if (url.pathname.startsWith('/static')) {
     return next()
   }
 
-  const systemSecret = c.env.COOKIE_SECRET || await ensureSystemSecret(c.env.record_manager_db)
-  c.set('systemSecret', systemSecret)
+  const db = c.env.record_manager_db
 
-  const settings = await getSettings(c.env.record_manager_db)
+  // One settings query covers both the signing secret and app configuration;
+  // this used to be a separate round-trip per request for each.
+  const settings = await getSettings(db)
+  const secret = c.env.COOKIE_SECRET || settings.SYSTEM_SECRET || await ensureSystemSecret(db)
+  c.set('systemSecret', secret)
   c.set('settings', settings)
 
-  const userEmail = await getSignedCookie(c, systemSecret, 'user')
+  const userEmail = await getSignedCookie(c, secret, 'user')
   if (userEmail) {
-    const user = await c.env.record_manager_db.prepare('SELECT * FROM users WHERE email = ?').bind(userEmail).first<any>()
-    c.set('user', user)
+    // Look the user up on every request so deleted/blacklisted accounts lose
+    // access immediately instead of when their cookie expires.
+    const user = await db.prepare('SELECT id, email, role FROM users WHERE email = ?').bind(userEmail).first()
+    c.set('user', user ?? null)
   }
 
-  const flash = await getFlash(c)
-  c.set('flash', flash)
+  c.set('flash', await getFlash(c))
 
   if (url.pathname === '/setup' || url.pathname.startsWith('/auth')) {
     return next()
   }
 
-  if (!settings.GOOGLE_CLIENT_ID || !settings.GOOGLE_CLIENT_SECRET || !settings.CF_API_TOKEN) {
+  if (!isConfigured(settings)) {
     return c.redirect('/setup')
   }
 
@@ -126,25 +147,24 @@ app.get('/', (c) => {
 // Dashboard (Main Overview)
 app.get('/dashboard', async (c) => {
   const user = c.get('user')
-  const flash = c.get('flash')
   if (!user) return c.redirect('/')
-  
+  const flash = c.get('flash')
+
   const settings = c.get('settings')
   const cf = new CloudflareClient(settings.CF_API_TOKEN)
-  
+
   try {
     const allZones = await cf.listZones()
     const { results: syncedDomains } = await c.env.record_manager_db.prepare('SELECT * FROM domains').all()
-    const syncedMap = new Map(syncedDomains.map((d: any) => [d.zone_id, d]))
+    const syncedMap = new Map((syncedDomains as any[]).map(d => [d.zone_id, d]))
 
     let displayZones = allZones
-    if (user.role !== 'owner' && user.role !== 'admin') {
-      const { results: permissions } = await c.env.record_manager_db.prepare('SELECT domain_id FROM permissions WHERE user_id = ?').bind(user.id).all()
-      const { results: recordPermissions } = await c.env.record_manager_db.prepare('SELECT domain_id FROM record_permissions WHERE user_id = ?').bind(user.id).all()
-      const allowedDomainIds = new Set([
-        ...permissions.map((p: any) => p.domain_id),
-        ...recordPermissions.map((rp: any) => rp.domain_id)
-      ])
+    if (user.role !== 'owner' && user.role !== 'admin' && user.role !== 'manager') {
+      const [{ results: permissions }, { results: recordPermissions }] = await c.env.record_manager_db.batch([
+        c.env.record_manager_db.prepare('SELECT domain_id FROM permissions WHERE user_id = ?').bind(user.id),
+        c.env.record_manager_db.prepare('SELECT DISTINCT domain_id FROM record_permissions WHERE user_id = ?').bind(user.id)
+      ]) as any
+      const allowedDomainIds = new Set([...permissions, ...recordPermissions].map((p: any) => p.domain_id))
       displayZones = allZones.filter((z: any) => {
         const synced = syncedMap.get(z.id) as any
         return synced && allowedDomainIds.has(synced.id)
@@ -153,65 +173,62 @@ app.get('/dashboard', async (c) => {
 
     return c.html(layout('Dashboard', (
       <Fragment>
-      <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 pb-5 border-b border-brand-border/30">
+      <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 pb-5 border-b border-slate-200">
         <div>
-          <h2 class="text-2xl font-bold font-display text-white mb-2 tracking-tight">Overview</h2>
-          <p class="text-slate-400 text-sm">Authenticated clearance: <span class="text-brand-primary font-bold uppercase font-mono text-xs px-2 py-0.5 rounded bg-brand-primary/10 border border-brand-primary/25">{user.role}</span>. Scanned {displayZones.length} domains.</p>
+          <h2 class="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Overview</h2>
+          <p class="text-slate-500 text-sm">Authenticated clearance: <span class="text-indigo-600 font-bold uppercase font-mono text-xs px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200">{user.role}</span>. Scanned {displayZones.length} domains.</p>
         </div>
         <div class="relative w-full md:w-64">
-          <input type="text" id="domain-search" placeholder="Search domains..." class="w-full pl-10 pr-4 py-2.5 bg-brand-deep/30 border border-brand-border/20 rounded-lg text-sm text-white placeholder-slate-500 focus:border-brand-primary focus:ring-brand-primary font-mono" onkeyup="filterDomains()" />
-          <svg class="absolute left-3 top-3.5 h-4 w-4 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <input type="text" id="domain-search" placeholder="Search domains..." class="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" onkeyup="filterDomains()" />
+          <svg class="absolute left-3 top-3.5 h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
         </div>
       </div>
 
       {displayZones.length === 0 ? (
-        <div class="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-8 text-center">
-          <div class="inline-flex items-center justify-center h-16 w-16 rounded-full bg-amber-500/10 text-amber-400 mb-4 border border-amber-500/20 shadow-[0_0_15px_rgba(245,158,11,0.1)]">
+        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-8 text-center">
+          <div class="inline-flex items-center justify-center h-16 w-16 rounded-full bg-white text-amber-500 mb-4 border border-amber-200 shadow-sm">
             <svg class="h-8 w-8" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
           </div>
-          <h3 class="text-xl font-bold text-white font-display mb-2">No Registered Domains</h3>
-          <p class="text-slate-400 mb-6 max-w-md mx-auto leading-relaxed text-sm">Cloudflare returned 0 active zones for your API token. Verify your configuration scopes or token status.</p>
-          <a href="/setup" class="btn-primary text-white text-xs px-6 py-3 rounded-lg font-bold inline-block shadow-md">Update Configuration</a>
+          <h3 class="text-xl font-bold text-slate-900 mb-2">No Registered Domains</h3>
+          <p class="text-slate-500 mb-6 max-w-md mx-auto leading-relaxed text-sm">Cloudflare returned no zones visible to your account. Verify your configuration scopes or token status.</p>
+          <a href={user.role === 'owner' ? '/setup' : '/domains'} class="btn-primary text-xs px-6 py-3 rounded-lg font-bold inline-block shadow-md">{user.role === 'owner' ? 'Update Configuration' : 'View Zones'}</a>
         </div>
       ) : (
         <div id="domain-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {displayZones.map((z: any) => {
             const synced = syncedMap.get(z.id) as any
-            const statusColor = z.status === 'active' ? 'text-green-400' : 'text-amber-400'
-            const statusBg = z.status === 'active' ? 'bg-green-500/10 border-green-500/20' : 'bg-amber-500/10 border-amber-500/20'
             return (
-              <div class="domain-card group relative bg-brand-dark/40 border border-brand-border/40 rounded-2xl p-5 hover:border-brand-primary/50 transition-all cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]" onclick={`location.href='${synced ? `/domains/${synced.id}` : '#'}'`} data-name={z.name}>
+              <div class="domain-card group relative bg-white border border-slate-200 rounded-2xl p-5 hover:border-indigo-300 transition-all cursor-pointer shadow-sm" onclick={`location.href='${synced ? `/domains/${synced.id}` : '#'}'`} data-name={z.name} key={z.id}>
                 <div class="flex justify-between items-start mb-4">
-                  <div class="h-10 w-10 bg-brand-primary/10 rounded-lg flex items-center justify-center text-brand-primary group-hover:bg-brand-primary group-hover:text-white transition-colors duration-300">
+                  <div class="h-10 w-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors duration-300">
                     <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                     </svg>
                   </div>
                   <div class="flex flex-col items-end gap-1.5">
-                    <span class={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border ${statusBg} ${statusColor}`}>{z.status}</span>
-                    {synced 
-                      ? <span class="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded bg-brand-primary/10 border border-brand-primary/20 text-brand-primary">Synced</span> 
-                      : <span class="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded bg-slate-500/10 border border-slate-500/25 text-slate-500">Unregistered</span>}
+                    <span class={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border ${z.status === 'active' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>{z.status}</span>
+                    {synced
+                      ? <span class="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-600">Synced</span>
+                      : <span class="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-500">Unregistered</span>}
                   </div>
                 </div>
-                <h3 class="text-base font-bold text-white font-display mb-1 truncate" title={z.name}>{z.name}</h3>
-                <p class="text-[11px] text-slate-500 font-mono mb-4 truncate">{z.id}</p>
-                <div class="flex items-center justify-between pt-4 border-t border-brand-border/20">
+                <h3 class="text-base font-bold text-slate-900 mb-1 truncate" title={z.name}>{z.name}</h3>
+                <p class="text-[11px] text-slate-400 font-mono mb-4 truncate">{z.id}</p>
+                <div class="flex items-center justify-between pt-4 border-t border-slate-100">
                   {synced ? (
-                    <a href={`/domains/${synced.id}`} class="text-xs font-bold text-brand-primary hover:text-brand-primary/80 transition font-display">Manage DNS Gateways &rarr;</a>
+                    <a href={`/domains/${synced.id}`} class="text-xs font-bold text-indigo-600 hover:text-indigo-500 transition">Manage DNS &rarr;</a>
                   ) : (
                     user.role === 'owner' ? (
-                      <form method="POST" action="/domains/sync" style="margin:0" onclick="event.stopPropagation()">
+                      <form method="post" action="/domains/sync" style="margin:0" onclick="event.stopPropagation()">
                         <input type="hidden" name="id" value={z.id} />
                         <input type="hidden" name="name" value={z.name} />
-                        <button type="submit" class="text-xs font-bold text-slate-400 hover:text-brand-primary transition">Register for Management</button>
+                        <button type="submit" class="text-xs font-bold text-slate-400 hover:text-indigo-600 transition">Register for Management</button>
                       </form>
-                    ) : <span class="text-xs text-slate-500 font-mono italic">Access Restricted</span>
-                  )}
+                    ) : <span class="text-xs text-slate-400 font-mono italic">Access Restricted</span>)}
                 </div>
               </div>
             )
@@ -233,17 +250,51 @@ app.get('/dashboard', async (c) => {
   } catch (e: any) {
     return c.html(layout('Error', (
       <div class="text-center py-12">
-        <div class="inline-flex items-center justify-center h-16 w-16 rounded-full bg-red-500/10 text-red-400 mb-4 border border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.1)]">
+        <div class="inline-flex items-center justify-center h-16 w-16 rounded-full bg-rose-50 text-rose-500 mb-4 border border-rose-200 shadow-sm">
           <svg class="h-8 w-8" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
         </div>
-        <h2 class="text-xl font-bold text-white font-display mb-2">Cloudflare Connection Timeout</h2>
-        <p class="text-slate-400 mb-6 max-w-md mx-auto text-sm leading-relaxed">Could not establish contact with Cloudflare API endpoint using secure keys. Check API token validation settings.</p>
-        <a href="/setup" class="btn-primary text-white text-xs px-6 py-3 rounded-lg font-bold inline-block shadow-md">Update Credentials</a>
+        <h2 class="text-xl font-bold text-slate-900 mb-2">Cloudflare Connection Failed</h2>
+        <p class="text-slate-500 mb-6 max-w-md mx-auto text-sm leading-relaxed">Could not reach the Cloudflare API with the stored credentials: {e?.message || 'unknown error'}. Check API token settings.</p>
+        <a href={user.role === 'owner' ? '/setup' : '/'} class="btn-primary text-xs px-6 py-3 rounded-lg font-bold inline-block shadow-md">{user.role === 'owner' ? 'Update Credentials' : 'Back to Sign In'}</a>
       </div>
     ), user, flash))
   }
+})
+
+// Friendly fallbacks instead of raw stack traces / blank 500s.
+app.notFound((c) => {
+  return c.html(layout('Not Found', (
+    <div class="text-center py-12">
+      <p class="text-6xl font-bold text-slate-200 mb-4">404</p>
+      <h2 class="text-lg font-bold text-slate-900 mb-2">Page not found</h2>
+      <p class="text-sm text-slate-500 mb-6">The page you requested does not exist.</p>
+      <a href="/" class="btn-primary text-xs px-5 py-2.5 rounded-lg font-bold inline-block">Return Home</a>
+    </div>
+  ), c.get('user'), c.get('flash')), 404)
+})
+
+app.onError(async (err, c) => {
+  // Middleware like csrf() raises HTTPException with a ready-made response
+  // (403 etc.) — pass those through instead of masking them as 500s.
+  if (err instanceof HTTPException) {
+    c.res = err.getResponse()
+  } else {
+    console.error('Unhandled error:', err)
+    c.res = await c.html(layout('Error', (
+      <div class="text-center py-12">
+        <p class="text-6xl font-bold text-slate-200 mb-4">!</p>
+        <h2 class="text-lg font-bold text-slate-900 mb-2">Something went wrong</h2>
+        <p class="text-sm text-slate-500 mb-6 max-w-md mx-auto">An unexpected error occurred. It has been logged. Please try again.</p>
+        <a href="/" class="btn-primary text-xs px-5 py-2.5 rounded-lg font-bold inline-block">Return Home</a>
+      </div>
+    ), c.get('user'), c.get('flash')), 500)
+  }
+  // The middleware stack has already unwound, so responses rendered here would
+  // otherwise ship without any security headers — apply them explicitly.
+  await securityHeaders(c, async () => {})
+  return c.res
 })
 
 // Mount Routes
