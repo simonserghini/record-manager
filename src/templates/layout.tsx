@@ -23,6 +23,7 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>{title} - Record Manager</title>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <script src="/theme.js"></script>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
@@ -63,14 +64,36 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
   return (
     <html lang="en" class="h-full bg-slate-50">
       {head}
-      <body class="h-full overflow-hidden bg-slate-50 text-slate-900">
-        <div class="flex h-full">
-          {/* Sidebar */}
-          <div class="hidden md:flex md:flex-shrink-0 border-r border-slate-200">
-            <div class="flex flex-col w-64 bg-white">
+      <body class="h-full overflow-hidden bg-slate-50 text-slate-900 flex flex-col">
+        {/* Mobile top bar — without it the sidebar (and all navigation) is
+            unreachable below the md breakpoint. */}
+        <div class="md:hidden flex-shrink-0 flex items-center justify-between h-14 px-4 bg-white border-b border-slate-200">
+          <button type="button" data-nav-toggle aria-label="Open navigation" class="p-2 -ml-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors">
+            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+          </button>
+          <a href="/dashboard" class="flex items-center gap-2">
+            <div class="h-7 w-7 rounded bg-slate-900 flex items-center justify-center text-white font-bold text-xs">R</div>
+            <span class="text-sm font-semibold text-slate-900 tracking-tight">Record Manager</span>
+          </a>
+          <button type="button" data-theme-toggle aria-label="Toggle dark mode" class="p-2 -mr-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors">
+            <svg class="h-5 w-5 dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+            <svg class="h-5 w-5 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+          </button>
+        </div>
+
+        {/* Drawer scrim on mobile; inert on desktop. */}
+        <div class="mobile-backdrop" data-nav-close></div>
+
+        <div class="flex flex-1 min-h-0">
+          {/* Sidebar — off-canvas drawer below md, static rail from md up */}
+          <div class="sidebar-drawer md:flex md:flex-shrink-0 border-r border-slate-200">
+            <div class="flex flex-col w-64 h-full bg-white">
               <div class="flex items-center gap-3 h-16 px-5 border-b border-slate-200">
                 <div class="h-8 w-8 rounded bg-slate-900 flex items-center justify-center text-white font-bold text-sm">R</div>
-                <span class="text-slate-900 text-base font-semibold tracking-tight">Record Manager</span>
+                <span class="text-slate-900 text-base font-semibold tracking-tight flex-1">Record Manager</span>
+                <button type="button" data-nav-close aria-label="Close navigation" class="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+                  <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
               </div>
               <div class="flex-1 flex flex-col overflow-y-auto pt-5 pb-4">
                 <nav class="flex-1 px-3 space-y-1">
@@ -94,7 +117,7 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
                         <svg class="h-4 w-4 dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
                         <svg class="h-4 w-4 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
                       </button>
-                      <form method="post" action="/auth/logout" style="display:inline;">
+                      <form method="post" action="/auth/logout" class="inline">
                         <button type="submit" class="text-xs text-slate-500 hover:text-slate-800 font-medium hover:underline flex items-center gap-1 cursor-pointer">
                           Logout
                           <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
@@ -102,7 +125,7 @@ export const layout = (title: string, content: any, user?: any, flash?: FlashMes
                       </form>
                     </div>
                   </div>
-                  <form method="post" action="/auth/logout-all" style="display:inline;">
+                  <form method="post" action="/auth/logout-all" class="inline">
                     <button type="submit" class="mt-2 text-[10px] text-slate-400 hover:text-slate-700 font-medium hover:underline cursor-pointer" data-confirm="Sign out on every device?">
                       Sign out everywhere
                     </button>

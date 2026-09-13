@@ -28,6 +28,19 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
+
+  /* Tailwind v4 ships buttons without pointer cursors — make every
+   * interactive element announce itself on pointer devices. */
+  button, [role="button"], summary { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+
+  /* Keyboard-only focus rings: tabbing is obvious, mouse clicks stay clean.
+   * Text inputs keep their own border+shadow focus treatment below. */
+  a:focus-visible, button:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--color-indigo-500);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
 }
 
 @layer components {
@@ -46,13 +59,18 @@
     border-radius: 6px;
     padding: 0.5rem 0.75rem;
     font-size: 0.875rem;
-    transition: all 0.1s ease-in-out;
+    transition: border-color 0.1s ease-in-out, box-shadow 0.1s ease-in-out;
+  }
+  input[type="text"]:hover, input[type="password"]:hover, input[type="email"]:hover,
+  input[type="number"]:hover, select:hover {
+    border-color: var(--color-slate-400);
   }
   input:focus, select:focus {
     outline: none;
     border-color: var(--color-indigo-600);
     box-shadow: 0 0 0 1px var(--color-indigo-600);
   }
+  input::placeholder { color: var(--color-slate-400); }
 
   input[type="checkbox"] {
     accent-color: var(--color-indigo-600);
@@ -101,6 +119,59 @@
     background: var(--color-slate-100);
     color: var(--color-slate-900) !important;
     font-weight: 600;
+  }
+
+  /* Record-type filter chips (records table). */
+  .type-chip {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+    padding: 0.25rem 0.625rem;
+    border-radius: 9999px;
+    border: 1px solid var(--color-slate-200);
+    background: var(--color-white);
+    color: var(--color-slate-600);
+    transition: all 0.12s ease-in-out;
+    cursor: pointer;
+  }
+  .type-chip:hover {
+    border-color: var(--color-indigo-300);
+    color: var(--color-indigo-600);
+  }
+  .type-chip-active, .type-chip-active:hover {
+    background: var(--color-slate-900);
+    border-color: var(--color-slate-900);
+    color: #ffffff;
+  }
+
+  /* Mobile navigation: the sidebar becomes an off-canvas drawer below md. */
+  @media (max-width: 767px) {
+    .sidebar-drawer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      z-index: 50;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease-out;
+    }
+    body.nav-open .sidebar-drawer { transform: translateX(0); }
+
+    .mobile-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgb(15 23 42 / 0.5);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease-out;
+    }
+    body.nav-open .mobile-backdrop { opacity: 1; pointer-events: auto; }
+    body.nav-open { overflow: hidden; }
+  }
+  @media (min-width: 768px) {
+    .mobile-backdrop { display: none; }
   }
 }
 
@@ -154,4 +225,13 @@
  * color on accent backgrounds is intentionally left untouched. */
 .dark :is(.bg-white, .hover\:bg-white:hover) {
   background-color: #131c2e;
+}
+
+/* The active chip inverts (light pill on dark ground) so the remapped
+ * slate-900 variable can't be used for its background. */
+.dark .type-chip { background: #131c2e; }
+.dark .type-chip-active, .dark .type-chip-active:hover {
+  background: #e2e8f0;
+  border-color: #e2e8f0;
+  color: #0b1220;
 }
