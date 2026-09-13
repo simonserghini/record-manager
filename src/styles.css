@@ -235,3 +235,13 @@
   border-color: #e2e8f0;
   color: #0b1220;
 }
+
+/* Brand surfaces (the R mark, primary buttons) must SURVIVE the slate
+ * inversion: they carry white text/icons in both themes, so the remapped
+ * near-white slate-900 would render them invisible. Lift them to a fixed
+ * navy that sits above the panel tone instead. */
+.dark :is(.bg-slate-900, .hover\:bg-slate-900:hover, .group:hover .group-hover\:bg-slate-900) {
+  background-color: #1e293b;
+}
+.dark .btn-primary { background: #1e293b; }
+.dark .btn-primary:hover { background: #334155; }
