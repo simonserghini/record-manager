@@ -161,7 +161,7 @@ const Footer = () => (
   <div class="py-6 border-t border-slate-200 text-center text-xs text-slate-400 font-mono flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-4">
     <span>Record Manager • Powered by Cloudflare Workers</span>
     <span class="hidden sm:inline text-slate-300">|</span>
-    <a href="https://github.com/simon-msdos/record-manager" target="_blank" rel="noopener noreferrer" class="hover:text-slate-600 underline flex items-center gap-1">
+    <a href="https://github.com/simonserghini/record-manager" target="_blank" rel="noopener noreferrer" class="hover:text-slate-600 underline flex items-center gap-1">
       GitHub
     </a>
   </div>

@@ -4,7 +4,7 @@ A modern, high-security DNS administration portal for Cloudflare. Built for team
 
 It’s fast, secure, and runs entirely on the Cloudflare edge using **Hono**, **D1**, and **JSX**.
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simon-msdos/record-manager)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simonserghini/record-manager)
 
 ---
 
@@ -103,7 +103,7 @@ Record types: every type Cloudflare supports — `A`, `AAAA`, `CAA`, `CERT`, `CN
 ```bash
 npm run typecheck   # strict TypeScript check across the whole worker
 npm run build:css   # compile Tailwind (src/styles.css → public/app.css)
-npm test            # 30-test vitest suite running inside workerd against a
+npm test            # 41-test vitest suite running inside workerd against a
                     # real local D1 with a mocked Cloudflare API: forged-cookie
                     # session matrix, CSRF, epoch revocation, RBAC +
                     # record-level clearances, full API CRUD end-to-end,
