@@ -33,7 +33,13 @@ export function rateLimit(key: string, limit: number, windowMs: number): boolean
   return true
 }
 
-/** Stable per-client key; falls back gracefully when headers are absent. */
+/**
+ * Stable per-client key. Only cf-connecting-ip is trusted: it is set by
+ * Cloudflare for every request that reaches the Worker, whereas headers like
+ * x-forwarded-for are client-controlled and would let callers mint unlimited
+ * rate-limit buckets. Local dev collapses to one shared bucket — acceptable
+ * for a best-effort brake.
+ */
 export function clientIp(c: { req: { header: (name: string) => string | undefined } }): string {
-  return c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  return c.req.header('cf-connecting-ip') || 'unknown'
 }

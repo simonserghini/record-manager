@@ -36,6 +36,15 @@ type Variables = {
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+// Registered first so its post-response code runs last: authenticated HTML
+// must never be storable by intermediaries or the back/forward cache.
+app.use('*', async (c, next) => {
+  await next()
+  if (c.get('user') && (c.res.headers.get('content-type') || '').includes('text/html')) {
+    c.res.headers.set('Cache-Control', 'no-store')
+  }
+})
+
 // Global Middleware — security headers first.
 // All app CSS/JS is bundled and served from /public via Workers Static
 // Assets, so scripts need nothing beyond 'self'; only Google Fonts remain
@@ -239,7 +248,7 @@ app.get('/dashboard', async (c) => {
                     <a href={`/domains/${synced.id}`} class="text-xs font-bold text-indigo-600 hover:text-indigo-500 transition">Manage DNS &rarr;</a>
                   ) : (
                     user.role === 'owner' ? (
-                      <form method="post" action="/domains/sync" style="margin:0">
+                      <form method="post" action="/domains/sync" class="m-0">
                         <input type="hidden" name="id" value={z.id} />
                         <input type="hidden" name="name" value={z.name} />
                         <button type="submit" class="text-xs font-bold text-slate-400 hover:text-indigo-600 transition">Register for Management</button>
@@ -300,6 +309,12 @@ app.onError(async (err, c) => {
   // The middleware stack has already unwound, so responses rendered here would
   // otherwise ship without any security headers — apply them explicitly.
   await securityHeaders(c, async () => {})
+  // Errors also skip the no-store middleware above (the throw unwinds past
+  // its post-response code), yet the error page still renders the signed-in
+  // layout — keep it uncached the same way.
+  if (c.get('user') && (c.res.headers.get('content-type') || '').includes('text/html')) {
+    c.res.headers.set('Cache-Control', 'no-store')
+  }
   return c.res
 })
 
@@ -340,12 +355,24 @@ async function reconcileOrphanedDomains(env: Bindings) {
   const liveZoneIds = new Set(zones.map((z: any) => z.id))
 
   const { results: synced } = await env.record_manager_db.prepare('SELECT id, zone_id, zone_name FROM domains').all()
-  for (const d of (synced as any[])) {
-    if (!liveZoneIds.has(d.zone_id)) {
-      // FKs cascade the permission/metadata cleanup, mirroring manual unsync.
-      await env.record_manager_db.prepare('DELETE FROM domains WHERE id = ?').bind(d.id).run()
-      await logAudit(env.record_manager_db, 'system@cron', 'CRON_UNSYNC_ORPHANED', 'DOMAIN', d.zone_name, { zone_id: d.zone_id })
-    }
+  const orphans = (synced as any[]).filter(d => !liveZoneIds.has(d.zone_id))
+
+  // A token scope change or account move makes EVERY zone vanish at once.
+  // Unserving that would cascade-delete all domains, permissions and record
+  // history on a false positive — only reconcile partial disappearances and
+  // leave a total wipe for a human to confirm via manual unsync.
+  if (orphans.length > 0 && orphans.length === (synced as any[]).length) {
+    await logAudit(env.record_manager_db, 'system@cron', 'CRON_UNSYNC_SKIPPED', 'DOMAIN', 'ALL', {
+      synced: orphans.length,
+      reason: 'no zones visible to the API token — possible scope change'
+    })
+    return
+  }
+
+  for (const d of orphans) {
+    // FKs cascade the permission/metadata cleanup, mirroring manual unsync.
+    await env.record_manager_db.prepare('DELETE FROM domains WHERE id = ?').bind(d.id).run()
+    await logAudit(env.record_manager_db, 'system@cron', 'CRON_UNSYNC_ORPHANED', 'DOMAIN', d.zone_name, { zone_id: d.zone_id })
   }
 }
 

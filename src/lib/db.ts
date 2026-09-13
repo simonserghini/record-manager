@@ -15,7 +15,11 @@ export async function ensureSystemSecret(db: D1Database): Promise<string> {
     .join('')
 
   await db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING').bind('SYSTEM_SECRET', newSecret).run()
-  return newSecret
+  // A concurrent request may have won the insert race — always hand back the
+  // value actually stored, never the local candidate (cookies signed with a
+  // losing candidate would silently fail validation).
+  const stored = await db.prepare('SELECT value FROM settings WHERE key = ?').bind('SYSTEM_SECRET').first<{ value: string }>()
+  return stored?.value ?? newSecret
 }
 
 export async function getSettings(db: D1Database): Promise<Settings> {
@@ -79,16 +83,24 @@ export function isValidBlacklistPattern(pattern: string) {
 
 export async function isBlacklisted(db: D1Database, name: string) {
   const { results } = await db.prepare('SELECT pattern FROM blacklist').all<{ pattern: string }>()
+  return matchBlacklist(results.map(r => r.pattern), name)
+}
+
+/**
+ * Pure matcher over pre-fetched patterns, so bulk paths (imports) can load
+ * the pattern list once instead of paying a D1 round-trip per record.
+ */
+export function matchBlacklist(patterns: string[], name: string) {
   // Cloudflare treats "foo.example.com." and "foo.example.com" as the same
   // record, so a trailing dot must not slip past the anchored match.
   const lowerName = name.toLowerCase().replace(/\.+$/, '')
-  return results.some(row => {
+  return patterns.some(pattern => {
     // Patterns are validated on insert, but rows written before that guard
     // existed may hold raw metacharacters — skip them rather than let one
     // legacy row 500 every record write forever.
     try {
-      const pattern = row.pattern.toLowerCase().replace(/\.+$/, '')
-      const escaped = pattern
+      const normalized = pattern.toLowerCase().replace(/\.+$/, '')
+      const escaped = normalized
         .replace(/\*/g, '\x00')
         .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         .replace(/\x00/g, '.*')

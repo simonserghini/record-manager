@@ -49,7 +49,9 @@ function splitRespectingQuotes(line: string): string[] {
 
 function unquote(value: string) {
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/"\s+"/g, ' ')
+    // Undo the escaping formatRecordsBind applies (\" → ", \\ → \) so an
+    // exported file re-imports to identical content.
+    return value.slice(1, -1).replace(/"\s+"/g, ' ').replace(/\\(["\\])/g, '$1')
   }
   return value
 }
@@ -124,22 +126,72 @@ export function parseBindZoneFile(text: string): ParsedEntry[] {
   return entries
 }
 
+type CsvRow = { cells: string[]; line: number }
+
+/**
+ * Splits CSV text into rows, honouring quoted cells that contain commas,
+ * doubled quotes and newlines — the previous line-based split corrupted any
+ * TXT record whose content spanned lines. `line` is the physical line the
+ * row starts on, for error messages.
+ */
+function parseCsvRows(text: string): CsvRow[] {
+  const rows: CsvRow[] = []
+  let cells: string[] = []
+  let current = ''
+  let inQuotes = false
+  let line = 1
+  let rowStart = 1
+
+  const endRow = () => {
+    cells.push(current.trim())
+    current = ''
+    if (cells.some(c => c !== '')) rows.push({ cells, line: rowStart })
+    cells = []
+  }
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"' && text[i + 1] === '"') { current += '"'; i++ }
+      else if (ch === '"') inQuotes = false
+      else {
+        if (ch === '\n') line++
+        current += ch
+      }
+    } else if (ch === '"') {
+      inQuotes = true
+    } else if (ch === ',') {
+      cells.push(current.trim())
+      current = ''
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      endRow()
+      line++
+      rowStart = line
+    } else {
+      current += ch
+    }
+  }
+  endRow()
+  return rows
+}
+
 /** Parses CSV in the exact shape exportRecordsCsv produces. */
 export function parseCsv(text: string): ParsedEntry[] {
-  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0)
+  const rows = parseCsvRows(text)
   const entries: ParsedEntry[] = []
-  const startIdx = lines[0]?.toLowerCase().startsWith('name,type,content') ? 1 : 0
+  const startIdx = rows[0] && rows[0].cells.slice(0, 3).join(',').toLowerCase() === 'name,type,content' ? 1 : 0
 
-  for (let i = startIdx; i < lines.length && entries.length <= IMPORT_MAX_ENTRIES; i++) {
-    const cells = splitCsvLine(lines[i])
+  for (let i = startIdx; i < rows.length && entries.length <= IMPORT_MAX_ENTRIES; i++) {
+    const { cells, line } = rows[i]
     if (cells.length < 3) {
-      entries.push({ line: i + 1, name: '', type: '', content: 'expected at least name,type,content', ttl: 1 })
+      entries.push({ line, name: '', type: '', content: 'expected at least name,type,content', ttl: 1 })
       continue
     }
     const ttl = parseInt(cells[3] ?? '1', 10)
     const priority = cells[4] ? parseInt(cells[4], 10) : null
     entries.push({
-      line: i + 1,
+      line,
       name: stripTrailingDot(cells[0]),
       type: cells[1].toUpperCase(),
       content: cells[2],
@@ -149,28 +201,6 @@ export function parseCsv(text: string): ParsedEntry[] {
     if (entries.length > IMPORT_MAX_ENTRIES) break
   }
   return entries
-}
-
-function splitCsvLine(line: string): string[] {
-  const cells: string[] = []
-  let current = ''
-  let inQuotes = false
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]
-    if (inQuotes) {
-      if (ch === '"' && line[i + 1] === '"') { current += '"'; i++ }
-      else if (ch === '"') inQuotes = false
-      else current += ch
-    } else if (ch === '"') {
-      inQuotes = true
-    } else if (ch === ',') {
-      cells.push(current); current = ''
-    } else {
-      current += ch
-    }
-  }
-  cells.push(current)
-  return cells.map(c => c.trim())
 }
 
 function csvEscape(value: string | number | null | undefined) {
@@ -188,16 +218,20 @@ export function formatRecordsBind(zoneName: string, records: ExportRecord[]) {
     ...records.map(r => {
       const rdata = r.type === 'MX' && r.priority != null
         ? `${r.priority} ${r.content}.`
-        : r.type === 'TXT' ? `"${r.content.replace(/"/g, '\\"')}"` : `${r.content}${needsDot(r) ? '.' : ''}`
+        : r.type === 'TXT'
+          // Escape backslash first, then quotes — unquote() reverses exactly this.
+          ? `"${r.content.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+          : `${r.content}${needsDot(r) ? '.' : ''}`
       return `${r.name}.\t${r.ttl}\tIN\t${r.type}\t${rdata}`
     })
   ]
   return lines.join('\n') + '\n'
 }
 
-// CNAME/MX targets must be absolute FQDNs in a zone file.
+// Hostname-valued rdata must be an absolute FQDN in a zone file. For SRV the
+// trailing field is the target, so appending the dot lands on it.
 function needsDot(record: ExportRecord) {
-  return ['CNAME', 'MX', 'NS', 'SRV'].includes(record.type) && !record.content.endsWith('.')
+  return ['CNAME', 'MX', 'NS', 'PTR', 'SRV'].includes(record.type) && !record.content.endsWith('.')
 }
 
 /** Serializes records as CSV (name,type,content,ttl,priority,proxied). */

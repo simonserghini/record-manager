@@ -94,7 +94,7 @@ curl -X DELETE -H "$T" \
      https://<your-worker>/api/v1/zones/<zone-id>/records/<record-id>
 ```
 
-Record types: `A`, `AAAA`, `CNAME`, `TXT`, `MX` (with optional `priority`). Errors are structured JSON (`{"error": ...}`) with meaningful status codes: 400 validation · 401/403 auth · 404 · 429 rate-limited · 502 upstream.
+Record types: every type Cloudflare supports — `A`, `AAAA`, `CAA`, `CERT`, `CNAME`, `DNSKEY`, `DS`, `HTTPS`, `LOC`, `MX`, `NAPTR`, `NS`, `PTR`, `SMIMEA`, `SRV`, `SSHFP`, `SVCB`, `TLSA`, `TXT`, `URI`. Structured rdata rides in `content` (`SRV`: `priority weight port target`, `CAA`: `flags tag "value"`); `MX` takes an optional `priority` field. Proxying applies to `A`/`AAAA`/`CNAME` only and is forced off for everything else. `PUT` replaces the record but optional fields you omit (`ttl`, `proxied`, `priority`) keep their current values — an update can't accidentally unproxy a record or reset its TTL. Errors are structured JSON (`{"error": ...}`) with meaningful status codes: 400 validation · 401/403 auth · 404 · 429 rate-limited · 502 upstream.
 
 ---
 

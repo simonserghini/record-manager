@@ -35,7 +35,9 @@ function isGlobalAdmin(role: string) {
 
 users.get('/', async (c) => {
   const user = c.get('user')
-  if (!user || !['owner', 'admin', 'manager'].includes(user.role)) return c.redirect('/')
+  // Owner/admin only — matches the sidebar visibility. Managers hold implicit
+  // domain_admin everywhere, so this page adds nothing for them.
+  if (!user || (user.role !== 'owner' && user.role !== 'admin')) return c.redirect('/')
 
   const db = c.env.record_manager_db
   const [{ results: userResults }, { results: domains }, { results: permissions }] = await db.batch([
@@ -128,12 +130,12 @@ users.get('/', async (c) => {
                           <div class="flex items-center justify-between gap-3 p-2 bg-slate-50 border border-slate-200 rounded-xl" key={`${u.id}-${d.id}`}>
                             <span class="font-bold text-slate-800 text-[10px] truncate max-w-[120px]">{d.zone_name}</span>
                             <div class="inline-flex flex-wrap items-center bg-slate-200/50 p-0.5 rounded-lg border border-slate-200 gap-0.5">
-                              <form method="post" action={`/users/${u.id}/permissions/revoke`} style="margin:0;">
+                              <form method="post" action={`/users/${u.id}/permissions/revoke`} class="m-0">
                                 <input type="hidden" name="domain_id" value={d.id} />
                                 <button type="submit" class={`px-1.5 py-0.5 text-[8px] font-bold rounded ${currentLevel === 'none' ? 'bg-rose-500 text-white' : 'text-slate-500 hover:text-rose-600'}`}>NONE</button>
                               </form>
                               {levels.map(lvl => (
-                                <form method="post" action={`/users/${u.id}/permissions`} style="margin:0;" key={lvl.key}>
+                                <form method="post" action={`/users/${u.id}/permissions`} class="m-0" key={lvl.key}>
                                   <input type="hidden" name="domain_id" value={d.id} />
                                   <input type="hidden" name="level" value={lvl.key} />
                                   <button type="submit" title={lvl.desc} class={`px-1.5 py-0.5 text-[8px] font-bold rounded ${currentLevel === lvl.key ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-indigo-600'}`}>{lvl.short}</button>
@@ -149,12 +151,12 @@ users.get('/', async (c) => {
                 </td>
                 <td class="px-4 py-4 whitespace-nowrap text-right text-xs font-bold">
                   {user.role === 'owner' && u.id !== user.id && (
-                    <form method="post" action={`/users/${u.id}/transfer-ownership`} style="display:inline; margin-right:1rem;" data-confirm={`Transfer ownership to ${u.email}? You will become an admin.`}>
+                    <form method="post" action={`/users/${u.id}/transfer-ownership`} class="inline mr-4" data-confirm={`Transfer ownership to ${u.email}? You will become an admin.`}>
                       <button type="submit" class="text-indigo-600 hover:text-indigo-500 font-bold transition">Make Owner</button>
                     </form>
                   )}
                   {canManageTarget && (
-                    <form method="post" action={`/users/${u.id}/delete`} style="display:inline;" data-confirm="Are you sure?">
+                    <form method="post" action={`/users/${u.id}/delete`} class="inline" data-confirm="Are you sure?">
                       <button type="submit" class="text-rose-500 hover:text-rose-600 font-bold transition">Remove Identity</button>
                     </form>
                   )}
@@ -241,6 +243,13 @@ users.post('/:id/permissions', async (c) => {
     await setFlash(c, { type: 'error', text: 'Invalid clearance request.' })
     return c.redirect('/users')
   }
+  // Verify the domain is actually synced — an FK violation here would bubble
+  // up as a raw 500 instead of a usable message.
+  const domainRow = await c.env.record_manager_db.prepare('SELECT id FROM domains WHERE id = ?').bind(domainId).first()
+  if (!domainRow) {
+    await setFlash(c, { type: 'error', text: 'That domain is not synced here.' })
+    return c.redirect('/users')
+  }
 
   await c.env.record_manager_db.prepare(
     'INSERT INTO permissions (user_id, domain_id, level) VALUES (?, ?, ?) ON CONFLICT(user_id, domain_id) DO UPDATE SET level = excluded.level'
@@ -266,6 +275,11 @@ users.post('/:id/permissions/revoke', async (c) => {
   }
   if (!domainId) {
     await setFlash(c, { type: 'error', text: 'Invalid revoke request.' })
+    return c.redirect('/users')
+  }
+  const domainRow = await c.env.record_manager_db.prepare('SELECT id FROM domains WHERE id = ?').bind(domainId).first()
+  if (!domainRow) {
+    await setFlash(c, { type: 'error', text: 'That domain is not synced here.' })
     return c.redirect('/users')
   }
 
@@ -376,7 +390,7 @@ blacklist.get('/', async (c) => {
             <tr class="hover:bg-slate-50/50 transition-colors" key={p.id}>
               <td class="px-4 py-4 whitespace-nowrap font-mono text-xs text-indigo-600 font-bold">{p.pattern}</td>
               <td class="px-4 py-4 whitespace-nowrap text-right text-xs font-bold">
-                <form method="post" action={`/blacklist/${p.id}/delete`} style="display:inline;">
+                <form method="post" action={`/blacklist/${p.id}/delete`} class="inline">
                   <button type="submit" class="text-rose-500 hover:text-rose-600 font-bold transition">Remove Rule</button>
                 </form>
               </td>

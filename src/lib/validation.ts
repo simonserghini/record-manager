@@ -1,4 +1,16 @@
-export const RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'TXT', 'MX'] as const
+// Every record type the Cloudflare API accepts through a flat name/content
+// pair (https://developers.cloudflare.com/dns/manage-dns-records/reference/dns-record-types/).
+// Types with structured rdata carry it inside `content`:
+//   SRV: "priority weight port target"   CAA: "flags tag \"value\""
+export const RECORD_TYPES = [
+  'A', 'AAAA', 'CAA', 'CERT', 'CNAME', 'DNSKEY', 'DS', 'HTTPS', 'LOC', 'MX',
+  'NAPTR', 'NS', 'PTR', 'SMIMEA', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT', 'URI'
+] as const
+
+// Types eligible for Cloudflare's proxy (orange cloud). The API rejects
+// proxied=true for everything else, so validation forces it off here instead
+// of letting the write fail downstream.
+const PROXIABLE_TYPES: readonly string[] = ['A', 'AAAA', 'CNAME']
 
 // TTL 1 means "Auto" in the Cloudflare API; otherwise the minimum is 60s
 const TTL_AUTO = 1
@@ -66,7 +78,7 @@ export function validateRecordInput(body: Record<string, string | File>): { erro
       name,
       content,
       ttl,
-      proxied: body.proxied === 'on',
+      proxied: body.proxied === 'on' && PROXIABLE_TYPES.includes(type),
       priority
     }
   }

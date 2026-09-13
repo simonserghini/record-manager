@@ -3,6 +3,7 @@ import { env } from 'cloudflare:test'
 import { parseSessionValue } from '../src/lib/session'
 import { isBlacklisted, isValidBlacklistPattern } from '../src/lib/db'
 import { parseBindZoneFile, parseCsv, formatRecordsBind, formatRecordsCsv } from '../src/lib/zonefiles'
+import { validateRecordInput, RECORD_TYPES } from '../src/lib/validation'
 import { generateApiToken, hashApiToken, resolveApiToken } from '../src/lib/apitokens'
 import { rateLimit } from '../src/lib/ratelimit'
 
@@ -103,6 +104,15 @@ describe('BIND zone file parsing', () => {
     expect(entries[0].type).toBe('')
     expect(entries[0].content).toContain('not enough fields')
   })
+
+  it('imports NS and SRV lines', () => {
+    const entries = parseBindZoneFile([
+      'example.com. 3600 IN NS ns1.example.com.',
+      '_sip._tcp.example.com. 300 IN SRV 10 60 5060 sip.example.com.'
+    ].join('\n'))
+    expect(entries[0]).toMatchObject({ type: 'NS', content: 'ns1.example.com' })
+    expect(entries[1]).toMatchObject({ type: 'SRV', content: '10 60 5060 sip.example.com' })
+  })
 })
 
 describe('CSV round trip', () => {
@@ -123,6 +133,26 @@ describe('CSV round trip', () => {
       { name: 'www', type: 'CNAME', content: 'host.example.com', ttl: 1 }
     ] as any)
     expect(bind).toContain('www.\t1\tIN\tCNAME\thost.example.com.')
+  })
+
+  it('round-trips TXT rdata with quotes and backslashes through BIND', () => {
+    const content = 'say "hi" \\ back'
+    const bind = formatRecordsBind('example.com', [
+      { name: 't', type: 'TXT', content, ttl: 300 }
+    ] as any)
+    const entries = parseBindZoneFile(bind)
+    expect(entries[0].content).toBe(content)
+  })
+
+  it('round-trips CSV cells containing quotes, commas and newlines', () => {
+    const records = [
+      { name: 'q.example.com', type: 'TXT', content: 'she said "hi\\ok"', ttl: 300 },
+      { name: 'n.example.com', type: 'TXT', content: 'line1\nline2, comma', ttl: 300 }
+    ]
+    const entries = parseCsv(formatRecordsCsv(records as any))
+    expect(entries).toHaveLength(2)
+    expect(entries[0].content).toBe('she said "hi\\ok"')
+    expect(entries[1].content).toBe('line1\nline2, comma')
   })
 })
 
@@ -150,6 +180,27 @@ describe('API tokens', () => {
       "UPDATE api_tokens SET revoked_at = datetime('now') WHERE user_id = ?"
     ).bind(user.id).run()
     await expect(resolveApiToken(env.record_manager_db, `Bearer ${secret}`)).resolves.toBeNull()
+  })
+})
+
+describe('record validation', () => {
+  it('accepts every Cloudflare record type with flat content', () => {
+    for (const type of RECORD_TYPES) {
+      const { errors, value } = validateRecordInput({ type, name: 'x.example.com', content: 'ns1.example.com', ttl: '300' })
+      expect(errors).toHaveLength(0)
+      expect(value!.type).toBe(type)
+    }
+  })
+
+  it('still rejects unknown types', () => {
+    expect(validateRecordInput({ type: 'BOGUS', name: 'x.example.com', content: 'y', ttl: '1' }).value).toBeUndefined()
+  })
+
+  it('forces the proxy off for non-proxiable types', () => {
+    const ns = validateRecordInput({ type: 'NS', name: 'example.com', content: 'ns1.example.com', ttl: '3600', proxied: 'on' })
+    expect(ns.value!.proxied).toBe(false)
+    const a = validateRecordInput({ type: 'A', name: 'x.example.com', content: '203.0.113.1', ttl: '300', proxied: 'on' })
+    expect(a.value!.proxied).toBe(true)
   })
 })
 

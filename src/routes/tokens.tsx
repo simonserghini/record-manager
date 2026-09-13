@@ -76,7 +76,7 @@ tokens.get('/', async (c) => {
                     </td>
                     <td class="px-5 py-3.5 text-right">
                       {!t.revoked_at && (
-                        <form method="post" action={`/tokens/${t.id}/revoke`} style="margin:0" data-confirm={`Revoke "${t.name}"? Any automation using it will stop working immediately.`}>
+                        <form method="post" action={`/tokens/${t.id}/revoke`} class="m-0" data-confirm={`Revoke "${t.name}"? Any automation using it will stop working immediately.`}>
                           <button type="submit" class="text-xs font-bold text-rose-600 hover:text-rose-500 transition cursor-pointer">Revoke</button>
                         </form>
                       )}
@@ -93,7 +93,7 @@ tokens.get('/', async (c) => {
 curl -H "Authorization: Bearer rm_..." ${''}\\
      https://<your-worker>/api/v1/zones
 
-# Create a record (A/AAAA/CNAME/TXT/MX)
+# Create a record — any Cloudflare type (A, AAAA, CNAME, TXT, MX, NS, SRV, …)
 curl -X POST -H "Authorization: Bearer rm_..." \\
      -H "Content-Type: application/json" \\
      -d '{"type":"A","name":"www","content":"203.0.113.7","ttl":300}' \\

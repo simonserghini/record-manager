@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import { Fragment } from 'hono/jsx'
 import { layout } from '../templates/layout'
 import { CloudflareClient } from '../cloudflare'
-import { logAudit, isBlacklisted, writeRecordHistory } from '../lib/db'
+import { logAudit, isBlacklisted, matchBlacklist, writeRecordHistory } from '../lib/db'
 import {
   getPermissionLevel, can, canViewDomain, canManageDelegation, canAddRecords,
   canEditRecord, canDeleteRecord, GLOBAL_ROLES, isValidLevel, RECORD_LEVEL_KEYS,
@@ -134,8 +134,8 @@ domains.get('/', async (c) => {
               <td class="px-4 py-4 whitespace-nowrap text-right text-sm font-bold">
                 {user.role === 'owner' ? (
                   syncedIds.has(z.id)
-                    ? <form method="post" action="/domains/unsync" style="display:inline;"><input type="hidden" name="id" value={z.id} /><button type="submit" class="text-rose-500 hover:text-rose-600 font-bold transition">Disable Sync</button></form>
-                    : <form method="post" action="/domains/sync" style="display:inline;"><input type="hidden" name="id" value={z.id} /><input type="hidden" name="name" value={z.name} /><button type="submit" class="text-indigo-600 hover:text-indigo-500 font-bold transition">Enable Sync</button></form>
+                    ? <form method="post" action="/domains/unsync" class="inline"><input type="hidden" name="id" value={z.id} /><button type="submit" class="text-rose-500 hover:text-rose-600 font-bold transition">Disable Sync</button></form>
+                    : <form method="post" action="/domains/sync" class="inline"><input type="hidden" name="id" value={z.id} /><input type="hidden" name="name" value={z.name} /><button type="submit" class="text-indigo-600 hover:text-indigo-500 font-bold transition">Enable Sync</button></form>
                 ) : <span class="text-slate-400 italic text-xs font-mono">Owner Required</span>}
               </td>
             </tr>
@@ -226,7 +226,9 @@ domains.get('/:id', async (c) => {
   ).bind(user.id, domainId!).all()
 
   const recordPermMap = new Map((recordPerms as any[]).map(rp => [rp.record_id, rp.level]))
-  if (!canViewDomain(user.role, userLevel, recordPermMap.size > 0)) return c.text('Forbidden', 403)
+  // Visitors without any clearance get 404, not 403 — a Forbidden tells them
+  // the internal domain id exists; "not found" hides it entirely.
+  if (!canViewDomain(user.role, userLevel, recordPermMap.size > 0)) return c.text('Domain not found', 404)
 
   const cf = new CloudflareClient(c.get('settings').CF_API_TOKEN)
   let records: any[] = []
@@ -267,6 +269,7 @@ domains.get('/:id', async (c) => {
   }
 
   const recordNameById = new Map(records.map(r => [r.id, r.name]))
+  const presentTypes = Array.from(new Set(records.map(r => r.type))).sort()
 
   return c.html(layout(`Manage ${domain.zone_name}`, (
     <Fragment>
@@ -310,17 +313,33 @@ domains.get('/:id', async (c) => {
               <label class="block text-xs font-bold text-slate-500 mb-1 uppercase font-mono">Name</label>
               <input type="text" name="name" placeholder="sub.example.com" required maxlength={255} class="w-full text-xs font-mono" />
             </div>
-            <div class="md:col-span-2">
+            <div class="md:col-span-3">
               <label class="block text-xs font-bold text-slate-500 mb-1 uppercase font-mono">Content</label>
-              <input type="text" name="content" placeholder="1.2.3.4" required maxlength={2048} class="w-full text-xs font-mono" />
+              <input type="text" name="content" placeholder="203.0.113.10" required maxlength={2048} class="w-full text-xs font-mono" />
+              <p class="mt-1.5 text-[10px] text-slate-400 font-mono" data-content-hint></p>
             </div>
-            <div class="md:col-span-1 flex flex-col items-center pb-2">
+            <div class="md:col-span-1">
+              <label class="block text-xs font-bold text-slate-500 mb-1 uppercase font-mono">TTL</label>
+              <select name="ttl" class="w-full text-xs font-mono">
+                <option value="1">Auto</option>
+                <option value="60">1 min</option>
+                <option value="300">5 min</option>
+                <option value="600">10 min</option>
+                <option value="1800">30 min</option>
+                <option value="3600">1 hour</option>
+                <option value="7200">2 hours</option>
+                <option value="86400">1 day</option>
+              </select>
+            </div>
+            <div class="md:col-span-1">
+              <label class="block text-xs font-bold text-slate-500 mb-1 uppercase font-mono">MX Priority</label>
+              <input type="number" name="priority" min="0" max="65535" placeholder="10" class="w-full text-xs font-mono" />
+            </div>
+            <div class="md:col-span-1 flex flex-col items-center pb-2.5">
                <label class="block text-xs font-bold text-slate-500 mb-1.5 uppercase font-mono">Proxied</label>
                <input type="checkbox" name="proxied" class="h-4 w-4" />
             </div>
-            <div class="md:col-span-5">
-               <input type="hidden" name="ttl" value="1" />
-            </div>
+            <div class="hidden md:block md:col-span-2"></div>
             <div class="md:col-span-1">
               <button type="submit" class="w-full btn-primary py-2 rounded-lg font-bold text-xs">Create</button>
             </div>
@@ -349,14 +368,26 @@ domains.get('/:id', async (c) => {
       </div>
     )}
 
-    <div class="mb-6 flex justify-between items-center gap-4">
-      <div class="relative w-full max-w-sm">
-        <input type="text" id="record-search" placeholder="Filter records..." class="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" data-filter-target=".record-row" />
-        <svg class="absolute left-3 top-3 h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
+    <div class="mb-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3 w-full lg:w-auto">
+        <div class="relative w-full sm:max-w-xs">
+          <input type="text" id="record-search" placeholder="Filter records…" aria-label="Filter records by name, type or content" data-record-search class="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm placeholder-slate-400 font-mono" />
+          <svg class="absolute left-3 top-3 h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+        {presentTypes.length > 1 && (
+          <div class="flex items-center gap-1.5 flex-wrap" data-type-filters>
+            <button type="button" data-type-filter="*" class="type-chip type-chip-active">All</button>
+            {presentTypes.map(t => (
+              <button type="button" data-type-filter={t} class="type-chip" key={t} aria-label={`Show only ${t} records`}>
+                {t} <span class="opacity-60">{records.filter(r => r.type === t).length}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      <div class="text-xs text-slate-500 font-mono whitespace-nowrap">Showing {records.length} records</div>
+      <div id="record-count" class="text-xs text-slate-500 font-mono whitespace-nowrap">Showing {records.length} of {records.length} records</div>
     </div>
 
     <div class="overflow-x-auto">
@@ -381,7 +412,7 @@ domains.get('/:id', async (c) => {
             const deletable = canDeleteRecord({ role: user.role, userLevel, recordLevel: rPerm, isCreatorOfRecord })
 
             return (
-              <tr class="record-row hover:bg-slate-50/80 transition-colors" data-search={`${r.type} ${r.name} ${r.content}`} key={r.id}>
+              <tr class="record-row hover:bg-slate-50/80 transition-colors" data-search={`${r.type} ${r.name} ${r.content}`} data-type={r.type} key={r.id}>
                 <td class="px-4 py-4 whitespace-nowrap">
                   <div class="flex flex-col">
                     <Badge type="user">{r.type}</Badge>
@@ -406,10 +437,10 @@ domains.get('/:id', async (c) => {
                 </td>
                 <td class="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
                   <div class="flex justify-end gap-2">
-                    {editable && <a href={`/domains/${domainId}/records/${r.id}/edit`} class="text-indigo-600 hover:text-indigo-500 p-1 rounded transition hover:bg-indigo-50" title="Edit"><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg></a>}
+                    {editable && <a href={`/domains/${domainId}/records/${r.id}/edit`} class="text-indigo-600 hover:text-indigo-500 p-1.5 rounded transition hover:bg-indigo-50" title="Edit" aria-label={`Edit ${r.name}`}><svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg></a>}
                     {deletable && (
-                      <form method="post" action={`/domains/${domainId}/records/${r.id}/delete`} style="display:inline;" data-confirm="Are you sure?">
-                        <button type="submit" class="text-rose-500 hover:text-rose-600 p-1 rounded transition hover:bg-rose-50" title="Delete">
+                      <form method="post" action={`/domains/${domainId}/records/${r.id}/delete`} class="inline" data-confirm="Are you sure?">
+                        <button type="submit" class="text-rose-500 hover:text-rose-600 p-1.5 rounded transition hover:bg-rose-50" title="Delete" aria-label={`Delete ${r.name}`}>
                           <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                         </button>
                       </form>
@@ -422,6 +453,7 @@ domains.get('/:id', async (c) => {
           {records.length === 0 && (
             <tr><td colspan={6} class="px-4 py-10 text-center text-xs text-slate-400 italic font-mono">No records visible for your access level.</td></tr>
           )}
+          <tr data-no-matches class="hidden"><td colspan={6} class="px-4 py-10 text-center text-xs text-slate-400 italic font-mono">No records match your filters.</td></tr>
         </tbody>
       </table>
     </div>
@@ -447,7 +479,7 @@ domains.get('/:id', async (c) => {
                       <span class="text-[9px] text-slate-400 font-mono">System Role: {u.role}</span>
                     </div>
                     <div class="inline-flex flex-wrap items-center bg-slate-100 p-1 rounded-xl border border-slate-200 gap-1">
-                      <form method="post" action={`/domains/${domainId}/delegation/revoke-domain`} style="margin:0;">
+                      <form method="post" action={`/domains/${domainId}/delegation/revoke-domain`} class="m-0">
                         <input type="hidden" name="user_id" value={u.id} />
                         <button type="submit" class={`px-2.5 py-1 text-[9px] font-bold rounded-lg transition-all ${currentLevel === 'none' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 hover:text-rose-600 hover:bg-slate-200/80'}`} title="No access">
                           NONE
@@ -457,7 +489,7 @@ domains.get('/:id', async (c) => {
                       {LEVELS.map(lvl => {
                         const isActive = currentLevel === lvl.key
                         return (
-                          <form method="post" action={`/domains/${domainId}/delegation/grant-domain`} style="margin:0;" key={lvl.key}>
+                          <form method="post" action={`/domains/${domainId}/delegation/grant-domain`} class="m-0" key={lvl.key}>
                             <input type="hidden" name="user_id" value={u.id} />
                             <input type="hidden" name="level" value={lvl.key} />
                             <button type="submit" class={`px-2.5 py-1 text-[9px] font-bold rounded-lg transition-all ${isActive ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-600 hover:bg-slate-200/80'}`} title={lvl.desc}>
@@ -520,7 +552,7 @@ domains.get('/:id', async (c) => {
                   </div>
                   <div class="flex items-center gap-2 shrink-0">
                     <Badge type="user">{rp.level}</Badge>
-                    <form method="post" action={`/domains/${domainId}/delegation/revoke-record`} style="margin:0;">
+                    <form method="post" action={`/domains/${domainId}/delegation/revoke-record`} class="m-0">
                       <input type="hidden" name="user_id" value={rp.user_id} />
                       <input type="hidden" name="record_id" value={rp.record_id} />
                       <button type="submit" class="text-rose-500 hover:text-rose-600 text-[10px] font-bold transition">Revoke</button>
@@ -802,7 +834,7 @@ domains.get('/:id/records/:recordId/edit', async (c) => {
       </div>
 
       <form method="post" action={`/domains/${ctx.domain.id}/records/${ctx.recordId}`} class="space-y-6 bg-white border border-slate-200 rounded-2xl p-6 md:p-8 shadow-sm">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div>
             <label class="block text-xs font-bold text-slate-500 mb-2 uppercase font-mono">Record Type</label>
             <select name="type" class="w-full text-xs font-mono">
@@ -812,6 +844,10 @@ domains.get('/:id/records/:recordId/edit', async (c) => {
           <div>
             <label class="block text-xs font-bold text-slate-500 mb-2 uppercase font-mono">TTL (seconds, 1 = Auto)</label>
             <input type="number" name="ttl" value={record.ttl} min="1" max="86400" class="w-full text-xs font-mono" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-500 mb-2 uppercase font-mono">MX Priority (MX only)</label>
+            <input type="number" name="priority" value={record.priority ?? ''} min="0" max="65535" placeholder="10" class="w-full text-xs font-mono" />
           </div>
         </div>
 
@@ -823,6 +859,7 @@ domains.get('/:id/records/:recordId/edit', async (c) => {
         <div>
           <label class="block text-xs font-bold text-slate-500 mb-2 uppercase font-mono">Content</label>
           <input type="text" name="content" value={record.content} required maxlength={2048} class="w-full text-xs font-mono" />
+          <p class="mt-1.5 text-[10px] text-slate-400 font-mono" data-content-hint></p>
         </div>
 
         <div class="flex items-center gap-2.5 py-2">
@@ -925,7 +962,7 @@ domains.get('/:id/export', async (c) => {
   // Export exposes the whole zone, so record-level clearance alone is not
   // enough — full zone visibility is required.
   const userLevel = await getPermissionLevel(c.env.record_manager_db, user, domain.id)
-  if (!canViewDomain(user.role, userLevel, false)) return c.text('Forbidden', 403)
+  if (!canViewDomain(user.role, userLevel, false)) return c.text('Domain not found', 404)
 
   const format = c.req.query('format') === 'csv' ? 'csv' : 'bind'
   const cf = new CloudflareClient(c.get('settings').CF_API_TOKEN)
@@ -985,6 +1022,27 @@ domains.post('/:id/import', async (c) => {
   let invalid = 0
   const failures: string[] = []
 
+  // Load blacklist patterns once: one isBlacklisted() call per entry meant a
+  // D1 round-trip (and subrequest) per imported record — at 500 entries the
+  // import blew past the Worker subrequest budget and died mid-way.
+  const { results: patternRows } = await c.env.record_manager_db.prepare('SELECT pattern FROM blacklist').all<{ pattern: string }>()
+  const patterns = patternRows.map(r => r.pattern)
+
+  // Bookkeeping writes are batched and flushed in chunks: per-entry batches
+  // waste subrequests, and one giant end-of-run batch can exceed D1's
+  // per-batch statement limits.
+  const db = c.env.record_manager_db
+  const pending: D1PreparedStatement[] = []
+  const flushBookkeeping = async () => {
+    if (pending.length === 0) return
+    const chunk = pending.splice(0, pending.length)
+    try {
+      await db.batch(chunk)
+    } catch {
+      if (failures.length < 5) failures.push('local bookkeeping (ownership/history) failed for some created records')
+    }
+  }
+
   for (const entry of entries) {
     // Parser errors come back as pseudo-entries with an empty name.
     if (!entry.name && entry.content) {
@@ -1006,7 +1064,7 @@ domains.post('/:id/import', async (c) => {
       continue
     }
 
-    if (await isBlacklisted(c.env.record_manager_db, record.name)) {
+    if (matchBlacklist(patterns, record.name)) {
       blocked++
       continue
     }
@@ -1014,20 +1072,22 @@ domains.post('/:id/import', async (c) => {
     try {
       const result = await cf.createRecord(domain.zone_id, record)
       if (result?.id) {
-        await c.env.record_manager_db.batch([
-          c.env.record_manager_db.prepare(
+        pending.push(
+          db.prepare(
             'INSERT INTO record_metadata (record_id, domain_id, created_by_email) VALUES (?, ?, ?)'
           ).bind(result.id, domain.id, user.email),
-          c.env.record_manager_db.prepare(
+          db.prepare(
             "INSERT INTO record_history (domain_id, record_id, name, type, content, ttl, action, actor_email) VALUES (?, ?, ?, ?, ?, ?, 'CREATE', ?)"
           ).bind(domain.id, result.id, record.name, record.type, record.content, record.ttl ?? null, user.email)
-        ])
+        )
+        if (pending.length >= 50) await flushBookkeeping()
       }
       created++
     } catch (e: any) {
       if (failures.length < 5) failures.push(`${record.name}: ${e.message}`)
     }
   }
+  await flushBookkeeping()
 
   await logAudit(c.env.record_manager_db, user.email, 'IMPORT_RECORDS', 'DOMAIN', domain.zone_name,
     { created, blocked, invalid, total: entries.length })
@@ -1063,7 +1123,8 @@ domains.get('/:id/history', async (c) => {
     'SELECT COUNT(*) AS n FROM record_permissions WHERE user_id = ? AND domain_id = ?'
   ).bind(user.id, domain.id).all()
   const hasRecordPerms = ((myRecordPerms as any[])[0]?.n ?? 0) > 0
-  if (!canViewDomain(user.role, userLevel, hasRecordPerms)) return c.text('Forbidden', 403)
+  // 404 rather than 403 — same hide-don't-reveal policy as the zone page.
+  if (!canViewDomain(user.role, userLevel, hasRecordPerms)) return c.text('Domain not found', 404)
 
   const pageRaw = parseInt(c.req.query('page') || '1', 10)
   const page = Number.isSafeInteger(pageRaw) && pageRaw > 0 ? pageRaw : 1

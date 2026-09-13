@@ -138,6 +138,19 @@ describe('role-based access control', () => {
     expect(userRes.status).toBe(302)
   })
 
+  it('rejects clearance grants for unsynced domains with a flash, not a 500', async () => {
+    const { userId } = await seedWorldAndDomains()
+    const res = await post(`/users/${userId}/permissions`, {
+      cookie: await freshSessionCookie(env.record_manager_db, OWNER),
+      form: { domain_id: '999999', level: 'read' }
+    })
+    expect(res.status).toBe(302)
+    const perms = await env.record_manager_db.prepare(
+      'SELECT COUNT(*) AS n FROM permissions WHERE user_id = ? AND domain_id = 999999'
+    ).bind(userId).first<any>()
+    expect(perms.n).toBe(0)
+  })
+
   it('only owners may transfer ownership', async () => {
     const world = await seedWorldAndDomains()
     const targetId = await seedUser(env.record_manager_db, { email: 'transferred@it.test', role: 'user' })
@@ -311,6 +324,137 @@ describe('JSON API + bearer tokens', () => {
     ).bind(userId, exampleId).run()
     const forbidden = await createRecord({ type: 'TXT', name: 'nope', content: 'x' })
     expect(forbidden.status).toBe(403)
+  })
+
+  it('PUT inherits omitted optional fields instead of resetting them', async () => {
+    const { exampleId, userId } = await seedWorldAndDomains()
+    await env.record_manager_db.prepare(
+      "INSERT INTO permissions (user_id, domain_id, level) VALUES (?, ?, 'delete') ON CONFLICT(user_id, domain_id) DO UPDATE SET level = 'delete'"
+    ).bind(userId, exampleId).run()
+    const token = `rm_${'c'.repeat(64)}`
+    if (!(await tokenExists(token))) await seedApiToken(env.record_manager_db, userId, token)
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+
+    const created = await SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records`, {
+      method: 'POST', redirect: 'manual', headers,
+      body: JSON.stringify({ type: 'MX', name: 'merge-test', content: 'mail.example.com', ttl: 300, priority: 25 })
+    })
+    expect(created.status).toBe(201)
+    const { id } = ((await created.json()) as any).record
+
+    // Only the content changes — no ttl, priority or proxied in the body.
+    const updated = await SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records/${id}`, {
+      method: 'PUT', redirect: 'manual', headers,
+      body: JSON.stringify({ type: 'MX', name: 'merge-test', content: 'mail2.example.com' })
+    })
+    expect(updated.status).toBe(200)
+
+    const list = await (await get(`/api/v1/zones/${exampleId}/records`, undefined, { authorization: `Bearer ${token}` })).json() as any
+    const record = list.records.find((r: any) => r.id === id)
+    expect(record.content).toBe('mail2.example.com')
+    expect(record.ttl).toBe(300)
+    expect(record.priority).toBe(25)
+
+    // A missing record now 404s before any mutation is attempted.
+    const ghost = await SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records/rec-does-not-exist`, {
+      method: 'PUT', redirect: 'manual', headers,
+      body: JSON.stringify({ type: 'A', name: 'x', content: '192.0.2.1' })
+    })
+    expect(ghost.status).toBe(404)
+  })
+
+  it('hides records from API clients whose clearance was revoked', async () => {
+    const { exampleId, userId } = await seedWorldAndDomains()
+    await env.record_manager_db.prepare(
+      "INSERT INTO permissions (user_id, domain_id, level) VALUES (?, ?, 'delete') ON CONFLICT(user_id, domain_id) DO UPDATE SET level = 'delete'"
+    ).bind(userId, exampleId).run()
+    const token = `rm_${'d'.repeat(64)}`
+    if (!(await tokenExists(token))) await seedApiToken(env.record_manager_db, userId, token)
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+
+    const keep = await SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records`, {
+      method: 'POST', redirect: 'manual', headers,
+      body: JSON.stringify({ type: 'A', name: 'revoke-keep', content: '192.0.2.10' })
+    })
+    const drop = await SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records`, {
+      method: 'POST', redirect: 'manual', headers,
+      body: JSON.stringify({ type: 'A', name: 'revoke-drop', content: '192.0.2.11' })
+    })
+    const keepId = ((await keep.json()) as any).record.id
+    const dropId = ((await drop.json()) as any).record.id
+
+    // Revoke all domain access, re-grant on exactly one record.
+    await env.record_manager_db.batch([
+      env.record_manager_db.prepare('DELETE FROM permissions WHERE user_id = ?').bind(userId),
+      env.record_manager_db.prepare(
+        "INSERT INTO record_permissions (user_id, domain_id, record_id, level) VALUES (?, ?, ?, 'read')"
+      ).bind(userId, exampleId, keepId)
+    ])
+
+    const list = await (await get(`/api/v1/zones/${exampleId}/records`, undefined, { authorization: `Bearer ${token}` })).json() as any
+    const names = list.records.map((r: any) => r.name)
+    expect(names).toContain('revoke-keep')
+    // The second record was created by this very token, but creation must not
+    // imply visibility once the clearance is gone.
+    expect(names).not.toContain('revoke-drop')
+    expect(list.records.find((r: any) => r.id === dropId)).toBeUndefined()
+  })
+
+  it('answers 404 (not 403) for zones an uncleared user cannot view', async () => {
+    const { exampleId, userId } = await seedWorldAndDomains()
+    await env.record_manager_db.batch([
+      env.record_manager_db.prepare('DELETE FROM permissions WHERE user_id = ?').bind(userId),
+      env.record_manager_db.prepare('DELETE FROM record_permissions WHERE user_id = ?').bind(userId)
+    ])
+
+    // Web UI: domain detail must not leak existence via a 403.
+    const web = await get(`/domains/${exampleId}`, await freshSessionCookie(env.record_manager_db, USER))
+    expect(web.status).toBe(404)
+
+    // JSON API: same policy.
+    const token = `rm_${'e'.repeat(64)}`
+    if (!(await tokenExists(token))) await seedApiToken(env.record_manager_db, userId, token)
+    const apiRes = await get(`/api/v1/zones/${exampleId}`, undefined, { authorization: `Bearer ${token}` })
+    expect(apiRes.status).toBe(404)
+  })
+
+  it('creates and edits less-common record types (NS, SRV, CAA)', async () => {
+    const { exampleId, userId } = await seedWorldAndDomains()
+    await env.record_manager_db.prepare(
+      "INSERT INTO permissions (user_id, domain_id, level) VALUES (?, ?, 'edit') ON CONFLICT(user_id, domain_id) DO UPDATE SET level = 'edit'"
+    ).bind(userId, exampleId).run()
+    const token = `rm_${'f'.repeat(64)}`
+    if (!(await tokenExists(token))) await seedApiToken(env.record_manager_db, userId, token)
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+    const create = (body: any) => SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records`, {
+      method: 'POST', redirect: 'manual', headers, body: JSON.stringify(body)
+    })
+
+    // NS: proxied is forced off even when requested (Cloudflare rejects it).
+    const ns = await create({ type: 'NS', name: 'example.com', content: 'ns1.example.com', ttl: 3600, proxied: true })
+    expect(ns.status).toBe(201)
+    expect(((await ns.json()) as any).record.proxied).toBe(false)
+
+    // SRV: structured rdata rides inside content.
+    const srv = await create({ type: 'SRV', name: '_sip._tcp.example.com', content: '10 60 5060 sip.example.com', ttl: 300 })
+    expect(srv.status).toBe(201)
+    const srvId = ((await srv.json()) as any).record.id
+
+    const caa = await create({ type: 'CAA', name: 'example.com', content: '0 issue "letsencrypt.org"', ttl: 3600 })
+    expect(caa.status).toBe(201)
+
+    // Updating an SRV keeps its rdata intact when only TTL changes.
+    const updated = await SELF.fetch(`http://localhost/api/v1/zones/${exampleId}/records/${srvId}`, {
+      method: 'PUT', redirect: 'manual', headers,
+      body: JSON.stringify({ type: 'SRV', name: '_sip._tcp.example.com', content: '10 60 5060 sip.example.com', ttl: 600 })
+    })
+    expect(updated.status).toBe(200)
+
+    const list = await (await get(`/api/v1/zones/${exampleId}/records`, undefined, { authorization: `Bearer ${token}` })).json() as any
+    const types = list.records.map((r: any) => r.type)
+    expect(types).toContain('NS')
+    expect(types).toContain('SRV')
+    expect(types).toContain('CAA')
   })
 })
 

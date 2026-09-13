@@ -5,6 +5,7 @@ import {
 } from '../lib/auth'
 import { isBlacklisted, logAudit, writeRecordHistory } from '../lib/db'
 import { validateRecordInput } from '../lib/validation'
+import type { RecordInput } from '../lib/validation'
 import { rateLimit } from '../lib/ratelimit'
 import { resolveApiToken } from '../lib/apitokens'
 
@@ -67,8 +68,13 @@ async function recordContext(db: D1Database, user: any, domainId: number, record
   return { userLevel, recordLevel, isCreatorOfRecord, canSee }
 }
 
-/** Parses a JSON body and maps it onto the same validation the forms use. */
-async function parseRecordBody(c: any) {
+/**
+ * Parses a JSON body and maps it onto the same validation the forms use.
+ * `provided` records which optional fields the caller actually sent, so the
+ * update path can inherit current values for the rest instead of resetting
+ * them to defaults.
+ */
+async function parseRecordBody(c: any): Promise<{ error: string } | { record: RecordInput; provided: { ttl: boolean; proxied: boolean; priority: boolean } }> {
   let body: any
   try {
     body = await c.req.json()
@@ -88,7 +94,14 @@ async function parseRecordBody(c: any) {
     proxied: body.proxied ? 'on' : ''
   })
   if (!record) return { error: errors.join(' ') }
-  return { record }
+  return {
+    record,
+    provided: {
+      ttl: body.ttl !== undefined,
+      proxied: body.proxied !== undefined,
+      priority: body.priority !== undefined && body.priority !== null
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +137,8 @@ api.get('/v1/zones/:id', async (c) => {
   const { results: rpRows } = await c.env.record_manager_db.prepare(
     'SELECT DISTINCT domain_id FROM record_permissions WHERE user_id = ? AND domain_id = ?'
   ).bind(user.id, domain.id).all()
-  if (!canViewDomain(user.role, userLevel, rpRows.length > 0)) return fail(c, 403, 'Forbidden.')
+  // 404 rather than 403: an uncleared caller must not learn the zone exists.
+  if (!canViewDomain(user.role, userLevel, rpRows.length > 0)) return fail(c, 404, 'Zone not found.')
 
   return c.json({ zone: { id: domain.id, zone_id: domain.zone_id, name: domain.zone_name } })
 })
@@ -144,7 +158,7 @@ api.get('/v1/zones/:id/records', async (c) => {
     'SELECT DISTINCT domain_id FROM record_permissions WHERE user_id = ? AND domain_id = ?'
   ).bind(user.id, domain.id).all()
   const hasRecordPerms = rpRows.length > 0
-  if (!canViewDomain(user.role, userLevel, hasRecordPerms)) return fail(c, 403, 'Forbidden.')
+  if (!canViewDomain(user.role, userLevel, hasRecordPerms)) return fail(c, 404, 'Zone not found.')
 
   let records: any[]
   try {
@@ -153,17 +167,15 @@ api.get('/v1/zones/:id/records', async (c) => {
     return fail(c, 502, `Cloudflare API error: ${e?.message || 'unknown'}`)
   }
 
-  // Record-level-only viewers see just their cleared records, like the UI.
+  // Record-level-only viewers see just their cleared records — exactly the
+  // policy the web UI enforces. Records the user once *created* do NOT stay
+  // visible after their clearance is revoked: revoke means revoke.
   const fullZoneView = canViewDomain(user.role, userLevel, false)
   if (!fullZoneView) {
     const { results: mine } = await db.prepare(
       'SELECT DISTINCT record_id FROM record_permissions WHERE user_id = ? AND domain_id = ?'
     ).bind(user.id, domain.id).all()
     const allowedIds = new Set((mine as any[]).map(r => r.record_id))
-    const { results: metaRows } = await db.prepare(
-      'SELECT record_id FROM record_metadata WHERE domain_id = ? AND created_by_email = ?'
-    ).bind(domain.id, user.email).all()
-    for (const m of (metaRows as any[])) allowedIds.add(m.record_id)
     records = records.filter(r => allowedIds.has(r.id))
   }
 
@@ -241,9 +253,27 @@ api.put('/v1/zones/:id/records/:recordId', async (c) => {
   if (loaded instanceof Response) return loaded
   const { user, domain, recordId } = loaded
 
+  const cf = new CloudflareClient(c.get('settings').CF_API_TOKEN)
+  let existing: any
+  try {
+    existing = (await cf.listRecords(domain.zone_id)).find((r: any) => r.id === recordId)
+  } catch (e: any) {
+    return fail(c, 502, `Cloudflare API error: ${e?.message || 'unknown'}`)
+  }
+  if (!existing) return fail(c, 404, 'Record not found.')
+
   const parsed = await parseRecordBody(c)
   if ('error' in parsed) return fail(c, 400, parsed.error!)
   const record = parsed.record!
+
+  // PUT replaces the record, but optional fields the caller omitted inherit
+  // their current values — otherwise every update would silently unproxy the
+  // record and reset its TTL to Auto / drop its MX priority.
+  if (!parsed.provided.ttl) record.ttl = existing.ttl
+  if (!parsed.provided.proxied) record.proxied = !!existing.proxied
+  if (!parsed.provided.priority && record.type === 'MX' && existing.type === 'MX') {
+    record.priority = existing.priority ?? null
+  }
 
   if (await isBlacklisted(c.env.record_manager_db, record.name)) {
     await logAudit(c.env.record_manager_db, user.email, 'UPDATE_BLOCKED', 'RECORD', record.name, { domain: domain.zone_name, reason: 'blacklisted', via: 'api' })
@@ -251,7 +281,7 @@ api.put('/v1/zones/:id/records/:recordId', async (c) => {
   }
 
   try {
-    await new CloudflareClient(c.get('settings').CF_API_TOKEN).updateRecord(domain.zone_id, recordId, record)
+    await cf.updateRecord(domain.zone_id, recordId, record)
   } catch (e: any) {
     return fail(c, 502, `Cloudflare rejected the update: ${e?.message || 'unknown'}`)
   }
