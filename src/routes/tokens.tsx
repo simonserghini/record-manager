@@ -87,8 +87,10 @@ tokens.get('/', async (c) => {
             </table>
           </div>
 
-          <div class="mt-6 bg-slate-900 rounded-xl p-5 text-slate-300 overflow-x-auto">
-            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono mb-3">Quickstart</h3>
+          {/* Dark code block in BOTH themes — text is pinned via .code-panel
+              so the slate inversion can't dim it onto the navy surface. */}
+          <div class="mt-6 bg-slate-900 code-panel rounded-xl p-5 overflow-x-auto">
+            <h3 class="text-xs font-bold uppercase tracking-wider font-mono mb-3 code-label">Quickstart</h3>
             <pre class="font-mono text-[11px] leading-relaxed whitespace-pre">{`# List zones visible to your account
 curl -H "Authorization: Bearer rm_..." ${''}\\
      https://<your-worker>/api/v1/zones

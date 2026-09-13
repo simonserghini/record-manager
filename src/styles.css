@@ -180,12 +180,14 @@
 /* ---------------------------------------------------------------- */
 
 .dark {
-  /* Slate scale inverted: 50 = page ground ... 900 = primary text. */
+  /* Slate scale inverted: 50 = page ground ... 900 = primary text.
+   * slate-400 is lifted above the stock shade because it is heavily used
+   * for secondary text on panels — at #64748b it measured only ~3.5:1. */
   --color-slate-50: #0b1220;
   --color-slate-100: #18223a;
   --color-slate-200: #2a3850;
   --color-slate-300: #46557a;
-  --color-slate-400: #64748b;
+  --color-slate-400: #7f92ab;
   --color-slate-500: #8fa1b8;
   --color-slate-600: #a5b4c9;
   --color-slate-700: #cbd5e1;
@@ -203,6 +205,7 @@
 
   --color-rose-50: #3f1220;
   --color-rose-200: #9f1239;
+  --color-rose-500: #fb7185;
   --color-rose-600: #fb7185;
   --color-rose-700: #fda4af;
 
@@ -245,3 +248,9 @@
 }
 .dark .btn-primary { background: #1e293b; }
 .dark .btn-primary:hover { background: #334155; }
+
+/* Code panel (API quickstart): a dark surface by design in BOTH themes,
+ * so its text is pinned to fixed light grays — theme-scaled slate would
+ * invert onto the navy background (measured 1.98:1). */
+.code-panel { color: #cbd5e1; }
+.code-label { color: #94a3b8; }
